@@ -9,6 +9,7 @@ import DropZone from './components/DropZone.vue'
 import ProgressBar from './components/ProgressBar.vue'
 import ToastContainer from './components/ToastContainer.vue'
 import ExportModal from './components/ExportModal.vue'
+import ModelSelector from './components/ModelSelector.vue'
 
 const libraryStore = useLibraryStore()
 const transcriptionStore = useTranscriptionStore()
@@ -17,6 +18,7 @@ const uiStore = useUIStore()
 const currentFile = ref<string | null>(null)
 const showDropZone = ref(true)
 const useDiarization = ref(true)
+const selectedModel = ref<string>('')
 
 // Computed
 const isProcessing = computed(() => {
@@ -50,12 +52,17 @@ async function startTranscription() {
 
   try {
     await transcriptionStore.startTranscription(currentFile.value, {
-      useDiarization: useDiarization.value
+      useDiarization: useDiarization.value,
+      model: selectedModel.value || undefined
     })
     uiStore.showSuccess('Transcription completed!')
   } catch (error) {
     uiStore.showError(error instanceof Error ? error.message : 'Transcription failed')
   }
+}
+
+function handleModelSelected(modelName: string) {
+  selectedModel.value = modelName
 }
 
 function handleSelectTranscription(id: string) {
@@ -129,13 +136,18 @@ onMounted(() => {
           <p>Ready to transcribe</p>
 
           <div class="options">
+            <ModelSelector
+              :selected-model="selectedModel"
+              @model-selected="handleModelSelected"
+            />
+
             <label class="checkbox-option">
               <input v-model="useDiarization" type="checkbox" />
               <span>Identify speakers (diarization)</span>
             </label>
           </div>
 
-          <button class="transcribe-button" @click="startTranscription">
+          <button class="transcribe-button" :disabled="!selectedModel" @click="startTranscription">
             Start Transcription
           </button>
         </div>

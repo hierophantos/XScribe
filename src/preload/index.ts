@@ -163,6 +163,14 @@ interface ModelInfo {
   name: string
   available: boolean
   size: string
+  description: string
+}
+
+interface ModelDownloadProgress {
+  modelName: string
+  percent: number
+  downloadedBytes: number
+  totalBytes: number
 }
 
 type ExportFormat = 'srt' | 'vtt' | 'txt' | 'json' | 'docx'
@@ -219,7 +227,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getDirectory: (): Promise<string | null> => ipcRenderer.invoke('models:getDirectory'),
     getAvailable: (): Promise<ModelInfo[]> => ipcRenderer.invoke('models:getAvailable'),
     load: (modelName: string): Promise<boolean> => ipcRenderer.invoke('models:load', modelName),
-    isReady: (): Promise<boolean> => ipcRenderer.invoke('models:isReady')
+    isReady: (): Promise<boolean> => ipcRenderer.invoke('models:isReady'),
+    download: (modelName: string): Promise<boolean> => ipcRenderer.invoke('models:download', modelName),
+    onDownloadProgress: (
+      callback: (data: { modelName: string; percent: number; downloadedBytes: number; totalBytes: number }) => void
+    ) => {
+      ipcRenderer.on('models:downloadProgress', (_event, data) => callback(data))
+    },
+    removeDownloadProgressListener: () => {
+      ipcRenderer.removeAllListeners('models:downloadProgress')
+    }
   },
 
   // Database - Projects
@@ -312,6 +329,9 @@ declare global {
         getAvailable: () => Promise<ModelInfo[]>
         load: (modelName: string) => Promise<boolean>
         isReady: () => Promise<boolean>
+        download: (modelName: string) => Promise<boolean>
+        onDownloadProgress: (callback: (data: ModelDownloadProgress) => void) => void
+        removeDownloadProgressListener: () => void
       }
       db: {
         projects: {

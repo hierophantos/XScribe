@@ -261,6 +261,14 @@ ipcMain.handle('models:isReady', () => {
   return transcriber.isModelLoaded()
 })
 
+ipcMain.handle('models:download', async (event, modelName: string) => {
+  const transcriber = getTranscriberService()
+  return transcriber.downloadModel(modelName as 'tiny.en' | 'tiny' | 'base.en' | 'base' | 'small.en' | 'small', (progress) => {
+    // Send progress updates to renderer
+    event.sender.send('models:downloadProgress', { modelName, ...progress })
+  })
+})
+
 // ============ Database IPC Handlers ============
 
 // Projects

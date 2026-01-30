@@ -7,7 +7,13 @@
 
 import { app } from 'electron'
 import { join } from 'path'
-import { existsSync, readdirSync } from 'fs'
+import { existsSync, readdirSync, mkdirSync, createWriteStream, unlinkSync } from 'fs'
+import { createGunzip } from 'zlib'
+import { pipeline } from 'stream/promises'
+import { exec } from 'child_process'
+import { promisify } from 'util'
+
+const execAsync = promisify(exec)
 
 // Lazy load sherpa-onnx to avoid startup issues
 let sherpaOnnx: typeof import('sherpa-onnx') | null = null
@@ -47,39 +53,61 @@ const MODEL_CONFIGS = {
     encoder: 'tiny.en-encoder.onnx',
     decoder: 'tiny.en-decoder.onnx',
     tokens: 'tiny.en-tokens.txt',
-    size: '~150MB'
+    size: '~150MB',
+    sizeBytes: 150_000_000,
+    archiveName: 'sherpa-onnx-whisper-tiny.en.tar.bz2',
+    description: 'Fastest, English only'
   },
   tiny: {
     encoder: 'tiny-encoder.onnx',
     decoder: 'tiny-decoder.onnx',
     tokens: 'tiny-tokens.txt',
-    size: '~150MB'
+    size: '~150MB',
+    sizeBytes: 150_000_000,
+    archiveName: 'sherpa-onnx-whisper-tiny.tar.bz2',
+    description: 'Fastest, multilingual'
   },
   'base.en': {
     encoder: 'base.en-encoder.onnx',
     decoder: 'base.en-decoder.onnx',
     tokens: 'base.en-tokens.txt',
-    size: '~280MB'
+    size: '~280MB',
+    sizeBytes: 280_000_000,
+    archiveName: 'sherpa-onnx-whisper-base.en.tar.bz2',
+    description: 'Balanced, English only'
   },
   base: {
     encoder: 'base-encoder.onnx',
     decoder: 'base-decoder.onnx',
     tokens: 'base-tokens.txt',
-    size: '~280MB'
+    size: '~280MB',
+    sizeBytes: 280_000_000,
+    archiveName: 'sherpa-onnx-whisper-base.tar.bz2',
+    description: 'Balanced, multilingual'
   },
   'small.en': {
     encoder: 'small.en-encoder.onnx',
     decoder: 'small.en-decoder.onnx',
     tokens: 'small.en-tokens.txt',
-    size: '~900MB'
+    size: '~900MB',
+    sizeBytes: 900_000_000,
+    archiveName: 'sherpa-onnx-whisper-small.en.tar.bz2',
+    description: 'Most accurate, English only'
   },
   small: {
     encoder: 'small-encoder.onnx',
     decoder: 'small-decoder.onnx',
     tokens: 'small-tokens.txt',
-    size: '~900MB'
+    size: '~900MB',
+    sizeBytes: 900_000_000,
+    archiveName: 'sherpa-onnx-whisper-small.tar.bz2',
+    description: 'Most accurate, multilingual'
   }
 } as const
+
+const MODEL_BASE_URL = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models'
+
+type DownloadProgressCallback = (progress: { percent: number; downloadedBytes: number; totalBytes: number }) => void
 
 type ModelName = keyof typeof MODEL_CONFIGS
 
@@ -121,12 +149,13 @@ export class TranscriberService {
     }
   }
 
-  getAvailableModels(): { name: string; available: boolean; size: string }[] {
+  getAvailableModels(): { name: string; available: boolean; size: string; description: string }[] {
     if (!this.modelPath) {
       return Object.entries(MODEL_CONFIGS).map(([name, config]) => ({
         name,
         available: false,
-        size: config.size
+        size: config.size,
+        description: config.description
       }))
     }
 
@@ -144,7 +173,8 @@ export class TranscriberService {
         availableFiles.has(config.encoder) &&
         availableFiles.has(config.decoder) &&
         availableFiles.has(config.tokens),
-      size: config.size
+      size: config.size,
+      description: config.description
     }))
   }
 
@@ -314,6 +344,119 @@ export class TranscriberService {
 
   getModelDirectory(): string | null {
     return this.modelPath
+  }
+
+  /**
+   * Download a model from sherpa-onnx releases
+   */
+  async downloadModel(
+    modelName: ModelName,
+    onProgress?: DownloadProgressCallback
+  ): Promise<boolean> {
+    if (!this.modelPath) {
+      throw new Error('Model directory not found')
+    }
+
+    const config = MODEL_CONFIGS[modelName]
+    if (!config) {
+      throw new Error(`Unknown model: ${modelName}`)
+    }
+
+    // Check if already downloaded
+    const models = this.getAvailableModels()
+    const existing = models.find((m) => m.name === modelName)
+    if (existing?.available) {
+      console.log(`[TranscriberService] Model ${modelName} already downloaded`)
+      return true
+    }
+
+    const url = `${MODEL_BASE_URL}/${config.archiveName}`
+    const tempFile = join(this.modelPath, `${modelName}-temp.tar.bz2`)
+
+    console.log(`[TranscriberService] Downloading model: ${modelName} from ${url}`)
+
+    try {
+      // Ensure model directory exists
+      if (!existsSync(this.modelPath)) {
+        mkdirSync(this.modelPath, { recursive: true })
+      }
+
+      // Download the file with progress tracking
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.status} ${response.statusText}`)
+      }
+
+      const totalBytes = parseInt(response.headers.get('content-length') || '0', 10) || config.sizeBytes
+      let downloadedBytes = 0
+
+      const fileStream = createWriteStream(tempFile)
+      const reader = response.body?.getReader()
+
+      if (!reader) {
+        throw new Error('Failed to get response reader')
+      }
+
+      // Read and write chunks
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        fileStream.write(Buffer.from(value))
+        downloadedBytes += value.length
+
+        onProgress?.({
+          percent: Math.round((downloadedBytes / totalBytes) * 100),
+          downloadedBytes,
+          totalBytes
+        })
+      }
+
+      fileStream.end()
+      await new Promise((resolve) => fileStream.on('finish', resolve))
+
+      console.log(`[TranscriberService] Download complete, extracting...`)
+      onProgress?.({ percent: 95, downloadedBytes: totalBytes, totalBytes })
+
+      // Extract the tar.bz2 file
+      // Use tar command on macOS/Linux
+      await execAsync(`tar -xjf "${tempFile}" -C "${this.modelPath}"`)
+
+      // Move files from extracted directory to models root
+      const extractedDir = join(this.modelPath, `sherpa-onnx-whisper-${modelName}`)
+      if (existsSync(extractedDir)) {
+        const files = readdirSync(extractedDir)
+        for (const file of files) {
+          const src = join(extractedDir, file)
+          const dest = join(this.modelPath, file)
+          await execAsync(`mv "${src}" "${dest}"`)
+        }
+        await execAsync(`rm -rf "${extractedDir}"`)
+      }
+
+      // Clean up temp file
+      if (existsSync(tempFile)) {
+        unlinkSync(tempFile)
+      }
+
+      console.log(`[TranscriberService] Model ${modelName} installed successfully`)
+      onProgress?.({ percent: 100, downloadedBytes: totalBytes, totalBytes })
+
+      return true
+    } catch (error) {
+      console.error(`[TranscriberService] Failed to download model:`, error)
+
+      // Clean up temp file on error
+      if (existsSync(tempFile)) {
+        try {
+          unlinkSync(tempFile)
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+
+      throw error
+    }
   }
 
   dispose(): void {
