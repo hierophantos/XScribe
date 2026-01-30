@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 
 interface ModelInfo {
   name: string
@@ -24,8 +24,18 @@ const error = ref<string | null>(null)
 
 const selectedModelName = ref<string>('')
 
+// Computed: available models (already downloaded)
 const availableModels = computed(() => models.value.filter((m) => m.available))
+
+// Computed: unavailable models (need download)
 const unavailableModels = computed(() => models.value.filter((m) => !m.available))
+
+// Track if the selected model needs download
+const selectedModelNeedsDownload = computed(() => {
+  if (!selectedModelName.value) return false
+  const model = models.value.find((m) => m.name === selectedModelName.value)
+  return model && !model.available
+})
 
 async function loadModels() {
   isLoading.value = true
@@ -49,27 +59,28 @@ async function loadModels() {
   }
 }
 
-function selectModel(modelName: string) {
-  const model = models.value.find((m) => m.name === modelName)
+function handleModelChange() {
+  const model = models.value.find((m) => m.name === selectedModelName.value)
   if (model?.available) {
-    selectedModelName.value = modelName
-    emit('modelSelected', modelName)
+    emit('modelSelected', selectedModelName.value)
   }
 }
 
-async function downloadModel(modelName: string) {
-  if (downloadingModel.value) return
+async function downloadModel(modelName?: string) {
+  const targetModel = modelName || selectedModelName.value
+  if (!targetModel || downloadingModel.value) return
 
-  downloadingModel.value = modelName
+  downloadingModel.value = targetModel
   downloadProgress.value = 0
   error.value = null
 
   try {
-    await window.electronAPI.models.download(modelName)
+    await window.electronAPI.models.download(targetModel)
     // Refresh model list after download
     await loadModels()
-    // Auto-select the newly downloaded model
-    selectModel(modelName)
+    // Select the newly downloaded model
+    selectedModelName.value = targetModel
+    emit('modelSelected', targetModel)
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Download failed'
     console.error('Download failed:', err)
@@ -120,24 +131,36 @@ onUnmounted(() => {
     </div>
 
     <div v-else class="selector-content">
-      <!-- Available models dropdown -->
+      <!-- All models dropdown with download indicators -->
       <div class="model-dropdown">
         <select
           v-model="selectedModelName"
           class="model-select"
+          :class="{ 'needs-download': selectedModelNeedsDownload }"
           :disabled="downloadingModel !== null"
-          @change="emit('modelSelected', selectedModelName)"
+          @change="handleModelChange"
         >
-          <option v-if="availableModels.length === 0" value="" disabled>
-            No models available
+          <option v-if="models.length === 0" value="" disabled>
+            No models configured
           </option>
-          <option
-            v-for="model in availableModels"
-            :key="model.name"
-            :value="model.name"
-          >
-            {{ model.name }} - {{ model.description }}
-          </option>
+          <optgroup v-if="availableModels.length > 0" label="Available">
+            <option
+              v-for="model in availableModels"
+              :key="model.name"
+              :value="model.name"
+            >
+              {{ model.name }} - {{ model.description }}
+            </option>
+          </optgroup>
+          <optgroup v-if="unavailableModels.length > 0" label="Available for Download">
+            <option
+              v-for="model in unavailableModels"
+              :key="model.name"
+              :value="model.name"
+            >
+              ⬇ {{ model.name }} - {{ model.description }}
+            </option>
+          </optgroup>
         </select>
 
         <div v-if="selectedModelName" class="model-info">
@@ -145,51 +168,27 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Download more models section -->
-      <div v-if="unavailableModels.length > 0" class="download-section">
-        <button
-          class="toggle-downloads"
-          @click="($event.target as HTMLElement).closest('.download-section')?.classList.toggle('expanded')"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="m6 9 6 6 6-6"/>
+      <!-- Download button when unavailable model is selected -->
+      <div v-if="selectedModelNeedsDownload && !downloadingModel" class="download-prompt">
+        <span class="download-notice">This model needs to be downloaded first</span>
+        <button class="download-btn" @click="downloadModel()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
-          Download more models
+          Download {{ selectedModelName }}
         </button>
+      </div>
 
-        <div class="download-list">
-          <div
-            v-for="model in unavailableModels"
-            :key="model.name"
-            class="download-item"
-          >
-            <div class="download-info">
-              <span class="model-name">{{ model.name }}</span>
-              <span class="model-desc">{{ model.description }}</span>
-              <span class="model-size">{{ model.size }}</span>
-            </div>
-
-            <button
-              v-if="downloadingModel !== model.name"
-              class="download-btn"
-              :disabled="downloadingModel !== null"
-              @click="downloadModel(model.name)"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="7 10 12 15 17 10"/>
-                <line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-              Download
-            </button>
-
-            <div v-else class="download-progress">
-              <div class="progress-bar">
-                <div class="progress-fill" :style="{ width: downloadProgress + '%' }"></div>
-              </div>
-              <span class="progress-text">{{ downloadProgress }}%</span>
-            </div>
-          </div>
+      <!-- Download progress -->
+      <div v-if="downloadingModel" class="download-progress-container">
+        <div class="download-status">
+          <span>Downloading {{ downloadingModel }}...</span>
+          <span class="progress-text">{{ downloadProgress }}%</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: downloadProgress + '%' }"></div>
         </div>
       </div>
     </div>
@@ -279,6 +278,20 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
+.model-select.needs-download {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.model-select optgroup {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.model-select option {
+  padding: 0.5rem;
+}
+
 .model-info {
   font-size: 0.75rem;
   color: var(--text-tertiary);
@@ -286,91 +299,32 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.download-section {
-  border-top: 1px solid var(--border-color);
-  padding-top: 0.75rem;
-}
-
-.toggle-downloads {
+.download-prompt {
   display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  background: none;
-  border: none;
-  color: var(--text-tertiary);
-  font-size: 0.8rem;
-  cursor: pointer;
-  padding: 0.25rem 0;
-}
-
-.toggle-downloads:hover {
-  color: var(--accent-color);
-}
-
-.toggle-downloads svg {
-  transition: transform 0.2s;
-}
-
-.download-section.expanded .toggle-downloads svg {
-  transform: rotate(180deg);
-}
-
-.download-list {
-  display: none;
   flex-direction: column;
   gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-.download-section.expanded .download-list {
-  display: flex;
-}
-
-.download-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.5rem 0.75rem;
-  background: var(--bg-tertiary);
+  padding: 0.75rem;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
   border-radius: 6px;
-  gap: 0.75rem;
 }
 
-.download-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  flex: 1;
-  min-width: 0;
-}
-
-.model-name {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.model-desc {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-}
-
-.model-size {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
+.download-notice {
+  font-size: 0.8rem;
+  color: #f59e0b;
 }
 
 .download-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 0.375rem;
-  padding: 0.375rem 0.625rem;
+  padding: 0.5rem 0.75rem;
   background: var(--accent-color);
   border: none;
   border-radius: 4px;
   color: white;
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
@@ -385,15 +339,25 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-.download-progress {
+.download-progress-container {
   display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.75rem;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+}
+
+.download-status {
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 0.5rem;
-  min-width: 100px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
 }
 
 .progress-bar {
-  flex: 1;
+  width: 100%;
   height: 6px;
   background: var(--bg-secondary);
   border-radius: 3px;
@@ -407,10 +371,8 @@ onUnmounted(() => {
 }
 
 .progress-text {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  min-width: 32px;
-  text-align: right;
 }
 </style>
