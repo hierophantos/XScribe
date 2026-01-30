@@ -31,6 +31,25 @@ interface ModalData {
   transcriptionId?: string
 }
 
+// Load font size from localStorage or use default
+function getInitialFontSize(): number {
+  if (typeof window !== 'undefined') {
+    const stored = localStorage.getItem('transcriptFontSize')
+    if (stored) {
+      const size = parseInt(stored, 10)
+      if (size >= 12 && size <= 24) return size
+    }
+  }
+  return 16 // Default font size
+}
+
+// Apply font size to CSS variable
+function applyFontSize(size: number): void {
+  if (typeof document !== 'undefined') {
+    document.documentElement.style.setProperty('--transcript-font-size', `${size}px`)
+  }
+}
+
 export const useUIStore = defineStore('ui', () => {
   // State
   const activeModal = ref<ModalType>(null)
@@ -39,6 +58,10 @@ export const useUIStore = defineStore('ui', () => {
   const viewMode = ref<ViewMode>('library')
   const sidebarCollapsed = ref(false)
   const isDraggingFile = ref(false)
+  const transcriptFontSize = ref(getInitialFontSize())
+
+  // Initialize font size on creation
+  applyFontSize(transcriptFontSize.value)
 
   // Computed
   const hasActiveModal = computed(() => activeModal.value !== null)
@@ -111,6 +134,22 @@ export const useUIStore = defineStore('ui', () => {
     isDraggingFile.value = isDragging
   }
 
+  // Font size actions
+  function setTranscriptFontSize(size: number) {
+    const clampedSize = Math.max(12, Math.min(24, size))
+    transcriptFontSize.value = clampedSize
+    applyFontSize(clampedSize)
+    localStorage.setItem('transcriptFontSize', String(clampedSize))
+  }
+
+  function increaseFontSize() {
+    setTranscriptFontSize(transcriptFontSize.value + 2)
+  }
+
+  function decreaseFontSize() {
+    setTranscriptFontSize(transcriptFontSize.value - 2)
+  }
+
   return {
     // State
     activeModal,
@@ -119,6 +158,7 @@ export const useUIStore = defineStore('ui', () => {
     viewMode,
     sidebarCollapsed,
     isDraggingFile,
+    transcriptFontSize,
 
     // Computed
     hasActiveModal,
@@ -141,6 +181,11 @@ export const useUIStore = defineStore('ui', () => {
     toggleSidebar,
 
     // Drag state
-    setDraggingFile
+    setDraggingFile,
+
+    // Font size
+    setTranscriptFontSize,
+    increaseFontSize,
+    decreaseFontSize
   }
 })

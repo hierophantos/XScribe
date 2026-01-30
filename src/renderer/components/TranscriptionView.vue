@@ -38,6 +38,11 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
+// Check if there are multiple speakers
+const hasMultipleSpeakers = computed(() => {
+  return transcriptionStore.uniqueSpeakers.length > 1
+})
+
 const groupedSegments = computed(() => {
   // Group consecutive segments by speaker
   const groups: Array<{
@@ -117,6 +122,29 @@ function openExportModal() {
         </span>
       </div>
       <div class="actions">
+        <!-- Font size controls -->
+        <div class="font-size-controls">
+          <button
+            class="font-btn"
+            @click="uiStore.decreaseFontSize()"
+            :disabled="uiStore.transcriptFontSize <= 12"
+            title="Decrease font size"
+          >
+            A-
+          </button>
+          <span class="font-size-value">{{ uiStore.transcriptFontSize }}px</span>
+          <button
+            class="font-btn"
+            @click="uiStore.increaseFontSize()"
+            :disabled="uiStore.transcriptFontSize >= 24"
+            title="Increase font size"
+          >
+            A+
+          </button>
+        </div>
+
+        <div class="actions-divider"></div>
+
         <button class="action-btn" @click="openExportModal">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -141,7 +169,7 @@ function openExportModal() {
       </div>
 
       <div v-for="(group, index) in groupedSegments" :key="index" class="speaker-block">
-        <div class="speaker-header">
+        <div class="speaker-header" v-if="hasMultipleSpeakers">
           <div
             v-if="editingSpeaker !== group.speakerId"
             class="speaker-badge"
@@ -204,7 +232,54 @@ function openExportModal() {
 
 .actions {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
+}
+
+.font-size-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  background: var(--bg-tertiary);
+  border-radius: 5px;
+}
+
+.font-btn {
+  padding: 0.25rem 0.5rem;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.font-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.font-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.font-size-value {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  min-width: 32px;
+  text-align: center;
+}
+
+.actions-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border-color);
+  margin: 0 0.25rem;
 }
 
 .action-btn {
@@ -322,6 +397,7 @@ function openExportModal() {
 }
 
 .speaker-text {
+  font-size: var(--transcript-font-size);
   line-height: 1.7;
   color: var(--text-primary);
 }

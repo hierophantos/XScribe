@@ -9,6 +9,7 @@ import DropZone from './components/DropZone.vue'
 import ProgressBar from './components/ProgressBar.vue'
 import ToastContainer from './components/ToastContainer.vue'
 import ExportModal from './components/ExportModal.vue'
+import SettingsModal from './components/SettingsModal.vue'
 import ModelSelector from './components/ModelSelector.vue'
 
 const libraryStore = useLibraryStore()
@@ -34,13 +35,6 @@ const hasResult = computed(() => {
 })
 
 // Methods
-async function handleFileSelect() {
-  const filePath = await window.electronAPI.openFileDialog()
-  if (filePath) {
-    currentFile.value = filePath
-    showDropZone.value = false
-  }
-}
 
 function handleFileDrop(filePath: string) {
   currentFile.value = filePath
@@ -112,7 +106,7 @@ onMounted(() => {
 
       <!-- Drop Zone / New Transcription View -->
       <div v-if="showDropZone && !currentFile" class="empty-state">
-        <DropZone @file-dropped="handleFileDrop" @click="handleFileSelect" />
+        <DropZone @file-dropped="handleFileDrop" />
       </div>
 
       <!-- File Selected, Ready to Transcribe -->
@@ -187,6 +181,7 @@ onMounted(() => {
 
     <!-- Modals -->
     <ExportModal v-if="uiStore.activeModal === 'export'" />
+    <SettingsModal v-if="uiStore.activeModal === 'settings'" />
   </div>
 </template>
 
