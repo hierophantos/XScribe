@@ -23,8 +23,8 @@ function handleDrop(event: DragEvent) {
   const files = event.dataTransfer?.files
   if (files && files.length > 0) {
     const file = files[0]
-    // In Electron, we can get the path from the file
-    const filePath = (file as File & { path?: string }).path
+    // Use Electron's webUtils to get the file path (works with contextIsolation)
+    const filePath = window.electronAPI.getPathForFile(file)
     if (filePath) {
       emit('fileDropped', filePath)
     }

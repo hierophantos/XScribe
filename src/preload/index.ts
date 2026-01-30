@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 // Import types from database (we'll define matching types here)
 // These match the types in src/main/database/types.ts
@@ -170,6 +170,9 @@ type ExportFormat = 'srt' | 'vtt' | 'txt' | 'json' | 'docx'
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
+  // File utilities
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
+
   // Dialog
   openFileDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:openFile'),
 
@@ -290,6 +293,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 declare global {
   interface Window {
     electronAPI: {
+      getPathForFile: (file: File) => string
       openFileDialog: () => Promise<string | null>
       getVersion: () => Promise<string>
       getPlatform: () => Promise<string>
