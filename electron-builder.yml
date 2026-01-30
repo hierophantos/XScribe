@@ -1,0 +1,82 @@
+appId: com.xscribe.app
+productName: XScribe
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - out/**/*
+  - "!node_modules/**/*"
+  - node_modules/@electron-toolkit/**/*
+  - node_modules/sherpa-onnx/**/*
+  - node_modules/better-sqlite3/**/*
+  - node_modules/bindings/**/*
+  - node_modules/file-uri-to-path/**/*
+
+asarUnpack:
+  - resources/**
+  - node_modules/sherpa-onnx/**/*.wasm
+  - node_modules/sherpa-onnx/**/*.js
+  - node_modules/better-sqlite3/**/*.node
+  - node_modules/better-sqlite3/build/**/*
+
+extraResources:
+  - from: models/
+    to: models/
+    filter:
+      - "**/*"
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: ${name}-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+        - arm64
+    - target: deb
+      arch:
+        - x64
+        - arm64
+  category: AudioVideo
+  maintainer: xscribe
+
+npmRebuild: true
+nodeGypRebuild: false
+
+publish:
+  provider: github
+  owner: ""
+  repo: xscribe
+  releaseType: draft

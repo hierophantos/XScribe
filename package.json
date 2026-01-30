@@ -1,0 +1,54 @@
+{
+  "name": "xscribe",
+  "version": "0.1.0",
+  "description": "Cross-platform local-first transcription app with speaker diarization",
+  "main": "out/main/index.js",
+  "author": "",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "prebuild": "electron-vite build",
+    "postinstall": "node scripts/postinstall.js && electron-builder install-app-deps",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ext .ts,.tsx,.vue",
+    "download:models": "bash scripts/download-models.sh",
+    "download:models:tiny": "WHISPER_MODEL=tiny bash scripts/download-models.sh",
+    "download:models:small": "WHISPER_MODEL=small bash scripts/download-models.sh",
+    "download:models:medium": "WHISPER_MODEL=medium bash scripts/download-models.sh"
+  },
+  "dependencies": {
+    "@electron-toolkit/utils": "^3.0.0",
+    "@vueuse/core": "^11.3.0",
+    "better-sqlite3": "^12.6.2",
+    "docx": "^9.5.1",
+    "pinia": "^3.0.4",
+    "sherpa-onnx": "^1.12.23",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@electron-toolkit/preload": "^3.0.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.0",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/tsconfig": "^0.7.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.0",
+    "vue": "^3.5.13",
+    "vue-tsc": "^2.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
