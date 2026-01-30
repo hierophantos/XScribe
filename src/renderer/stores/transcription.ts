@@ -37,7 +37,7 @@ interface TranscriptionProgress {
   totalTime: number
 }
 
-type TranscriptionStatus = 'idle' | 'pending' | 'processing' | 'completed' | 'failed'
+type TranscriptionStatus = 'idle' | 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
 
 export const useTranscriptionStore = defineStore('transcription', () => {
   // State
@@ -166,6 +166,63 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     }
   }
 
+  function onTranscriptionCancelled(data: { id: string }) {
+    if (data.id === activeTranscriptionId.value) {
+      status.value = 'cancelled'
+      progress.value = null
+    }
+  }
+
+  // Extensions that require ffmpeg for conversion
+  const NEEDS_FFMPEG = ['.mp3', '.m4a', '.flac', '.ogg', '.webm', '.mp4', '.mkv', '.avi', '.mov']
+
+  // Check if a file needs ffmpeg and if it's installed
+  // FFmpeg is bundled with the app, so this should always succeed
+  // But we keep the check as a fallback in case the bundled binary fails
+  async function ensureFFmpegForFile(filePath: string): Promise<boolean> {
+    const ext = filePath.toLowerCase().split('.').pop()
+    if (!ext || !NEEDS_FFMPEG.includes(`.${ext}`)) {
+      return true // WAV files don't need ffmpeg
+    }
+
+    // Check if ffmpeg is available (bundled or system)
+    const ffmpegStatus = await window.electronAPI.ffmpeg.check()
+    if (ffmpegStatus.installed) {
+      return true
+    }
+
+    // FFmpeg not found - this shouldn't happen with bundled ffmpeg
+    // but provide a fallback to install system ffmpeg
+    console.warn('[TranscriptionStore] Bundled FFmpeg not found, prompting for installation')
+
+    // Prompt user to install ffmpeg
+    const choice = await window.electronAPI.ffmpeg.promptInstall()
+
+    if (choice === 'cancel') {
+      throw new Error('FFmpeg is required to process this file type. Installation was cancelled.')
+    }
+
+    if (choice === 'manual') {
+      await window.electronAPI.ffmpeg.showManualInstructions()
+      throw new Error('Please install FFmpeg manually and restart XScribe.')
+    }
+
+    // User chose to install automatically
+    const installResult = await window.electronAPI.ffmpeg.install()
+
+    if (!installResult.success) {
+      throw new Error(installResult.error || 'FFmpeg installation failed. Please install manually.')
+    }
+
+    // Verify installation
+    const newStatus = await window.electronAPI.ffmpeg.check()
+    if (!newStatus.installed) {
+      throw new Error('FFmpeg installation completed, but could not be detected. Please restart XScribe and try again.')
+    }
+
+    return true
+  }
+
   // Start a new transcription
   async function startTranscription(
     filePath: string,
@@ -181,7 +238,10 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     progress.value = null
 
     try {
-      const result = await window.electronAPI.transcribe(filePath, options)
+      // Check for ffmpeg if needed for this file type
+      await ensureFFmpegForFile(filePath)
+
+      const result = await window.electronAPI.transcribe.start(filePath, options)
 
       // The result contains the transcription ID and segments
       activeTranscriptionId.value = result.id
@@ -234,6 +294,7 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     onTranscriptionCreated,
     onTranscriptionProgress,
     onTranscriptionCompleted,
-    onTranscriptionFailed
+    onTranscriptionFailed,
+    onTranscriptionCancelled
   }
 })

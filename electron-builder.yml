@@ -12,6 +12,7 @@ files:
   - node_modules/better-sqlite3/**/*
   - node_modules/bindings/**/*
   - node_modules/file-uri-to-path/**/*
+  - node_modules/ffmpeg-static/**/*
 
 asarUnpack:
   - resources/**
@@ -19,6 +20,8 @@ asarUnpack:
   - node_modules/sherpa-onnx/**/*.js
   - node_modules/better-sqlite3/**/*.node
   - node_modules/better-sqlite3/build/**/*
+  - node_modules/ffmpeg-static/ffmpeg
+  - node_modules/ffmpeg-static/ffmpeg.exe
 
 extraResources:
   - from: models/

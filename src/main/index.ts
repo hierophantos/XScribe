@@ -5,6 +5,14 @@ import { getTranscriberService } from './services/transcriber'
 import { getDiarizerService, mergeTranscriptionWithDiarization } from './services/diarizer'
 import { getDatabaseService, closeDatabaseService } from './database'
 import { getExporterService, ExportFormat } from './services/exporter'
+import {
+  checkFFmpeg,
+  promptFFmpegInstall,
+  installFFmpeg,
+  showManualInstructions,
+  getFFmpegStatus,
+  clearFFmpegCache
+} from './services/ffmpeg-installer'
 import type {
   CreateProjectData,
   UpdateProjectData,
@@ -68,6 +76,33 @@ ipcMain.handle('app:getVersion', () => {
 
 ipcMain.handle('app:getPlatform', () => {
   return process.platform
+})
+
+// ============ FFmpeg IPC Handlers ============
+
+ipcMain.handle('ffmpeg:check', async () => {
+  return await getFFmpegStatus(true) // Force check
+})
+
+ipcMain.handle('ffmpeg:promptInstall', async () => {
+  return await promptFFmpegInstall(mainWindow)
+})
+
+ipcMain.handle('ffmpeg:install', async (event) => {
+  const result = await installFFmpeg(mainWindow, (message) => {
+    event.sender.send('ffmpeg:installProgress', { message })
+  })
+
+  // Clear cache so next check is fresh
+  if (result.success) {
+    clearFFmpegCache()
+  }
+
+  return result
+})
+
+ipcMain.handle('ffmpeg:showManualInstructions', async () => {
+  await showManualInstructions(mainWindow)
 })
 
 // ============ Transcription IPC Handlers ============
@@ -217,6 +252,28 @@ ipcMain.handle(
     }
   }
 )
+
+// Cancel transcription
+ipcMain.handle('transcribe:cancel', async (event, transcriptionId: string) => {
+  const transcriber = getTranscriberService()
+  const db = getDatabaseService()
+
+  try {
+    // Kill the worker process if it's running
+    transcriber.cancelCurrentTranscription()
+
+    // Update database status to cancelled
+    db.updateTranscription(transcriptionId, { status: 'cancelled' })
+
+    // Notify renderer
+    event.sender.send('transcribe:cancelled', { id: transcriptionId })
+
+    return { success: true }
+  } catch (error) {
+    console.error('[Main] Failed to cancel transcription:', error)
+    throw error
+  }
+})
 
 // ============ Diarization IPC Handlers ============
 

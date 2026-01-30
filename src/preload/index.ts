@@ -24,7 +24,7 @@ interface UpdateProjectData {
   color?: string | null
 }
 
-type TranscriptionStatus = 'pending' | 'processing' | 'completed' | 'failed'
+type TranscriptionStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
 
 interface Tag {
   id: string
@@ -188,9 +188,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
   getPlatform: (): Promise<string> => ipcRenderer.invoke('app:getPlatform'),
 
+  // FFmpeg
+  ffmpeg: {
+    check: (): Promise<{ installed: boolean; path?: string; version?: string; bundled?: boolean }> =>
+      ipcRenderer.invoke('ffmpeg:check'),
+    promptInstall: (): Promise<'install' | 'cancel' | 'manual'> =>
+      ipcRenderer.invoke('ffmpeg:promptInstall'),
+    install: (): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('ffmpeg:install'),
+    showManualInstructions: (): Promise<void> =>
+      ipcRenderer.invoke('ffmpeg:showManualInstructions'),
+    onInstallProgress: (callback: (data: { message: string }) => void) => {
+      ipcRenderer.on('ffmpeg:installProgress', (_event, data) => callback(data))
+    },
+    removeInstallProgressListener: () => {
+      ipcRenderer.removeAllListeners('ffmpeg:installProgress')
+    }
+  },
+
   // Transcription
-  transcribe: (filePath: string, options?: TranscribeOptions): Promise<TranscriptionResult & { id: string }> =>
-    ipcRenderer.invoke('transcribe:start', filePath, options),
+  transcribe: {
+    start: (filePath: string, options?: TranscribeOptions): Promise<TranscriptionResult & { id: string }> =>
+      ipcRenderer.invoke('transcribe:start', filePath, options),
+    cancel: (transcriptionId: string): Promise<{ success: boolean }> =>
+      ipcRenderer.invoke('transcribe:cancel', transcriptionId)
+  },
 
   onTranscriptionCreated: (callback: (data: { id: string; fileName: string; status: string }) => void) => {
     ipcRenderer.on('transcribe:created', (_event, data) => callback(data))
@@ -212,6 +234,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   onTranscriptionFailed: (callback: (data: { id: string; status: string; error: string }) => void) => {
     ipcRenderer.on('transcribe:failed', (_event, data) => callback(data))
+  },
+
+  onTranscriptionCancelled: (callback: (data: { id: string }) => void) => {
+    ipcRenderer.on('transcribe:cancelled', (_event, data) => callback(data))
   },
 
   // Diarization
@@ -314,7 +340,18 @@ declare global {
       openFileDialog: () => Promise<string | null>
       getVersion: () => Promise<string>
       getPlatform: () => Promise<string>
-      transcribe: (filePath: string, options?: TranscribeOptions) => Promise<TranscriptionResult & { id: string }>
+      ffmpeg: {
+        check: () => Promise<{ installed: boolean; path?: string; version?: string; bundled?: boolean }>
+        promptInstall: () => Promise<'install' | 'cancel' | 'manual'>
+        install: () => Promise<{ success: boolean; error?: string }>
+        showManualInstructions: () => Promise<void>
+        onInstallProgress: (callback: (data: { message: string }) => void) => void
+        removeInstallProgressListener: () => void
+      }
+      transcribe: {
+        start: (filePath: string, options?: TranscribeOptions) => Promise<TranscriptionResult & { id: string }>
+        cancel: (transcriptionId: string) => Promise<{ success: boolean }>
+      }
       onTranscriptionCreated: (callback: (data: { id: string; fileName: string; status: string }) => void) => void
       onTranscriptionStatus: (callback: (data: { id: string; status: string }) => void) => void
       onTranscriptionProgress: (callback: (progress: TranscriptionProgress & { id: string }) => void) => void
@@ -322,6 +359,7 @@ declare global {
         callback: (data: { id: string; status: string; duration: number; segmentCount: number }) => void
       ) => void
       onTranscriptionFailed: (callback: (data: { id: string; status: string; error: string }) => void) => void
+      onTranscriptionCancelled: (callback: (data: { id: string }) => void) => void
       diarize: (filePath: string) => Promise<DiarizationResult>
       onDiarizationProgress: (callback: (progress: DiarizationProgress) => void) => void
       models: {
