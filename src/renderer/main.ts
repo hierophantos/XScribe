@@ -59,3 +59,11 @@ window.electronAPI.onTranscriptionFailed((data) => {
     error: data.error
   })
 })
+
+window.electronAPI.onTranscriptionCancelled((data) => {
+  transcriptionStore.onTranscriptionCancelled(data)
+  // Update local state
+  libraryStore.updateTranscriptionLocally(data.id, {
+    status: 'cancelled'
+  })
+})
