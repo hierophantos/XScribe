@@ -30,7 +30,12 @@ yarn-error.log*
 # Models (large files - download separately)
 models/*.bin
 models/*.onnx
+models/*.txt
+models/test_wavs/
 !models/.gitkeep
+
+# Claude Code
+.claude/
 
 # Test coverage
 coverage/
