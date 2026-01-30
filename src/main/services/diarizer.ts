@@ -1,5 +1,5 @@
 /**
- * Speaker Diarization service using sherpa-onnx
+ * Speaker Diarization service using sherpa-onnx (WASM)
  *
  * This service handles:
  * - Loading speaker segmentation and embedding models
@@ -149,7 +149,7 @@ export class DiarizerService {
     }
 
     try {
-      // Dynamic import of sherpa-onnx
+      // Dynamic import of sherpa-onnx (WASM)
       this.sherpaOnnx = await import('sherpa-onnx')
 
       // Create the diarization pipeline

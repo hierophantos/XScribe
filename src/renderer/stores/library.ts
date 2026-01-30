@@ -21,7 +21,7 @@ interface Tag {
   color: string | null
 }
 
-type TranscriptionStatus = 'pending' | 'processing' | 'completed' | 'failed'
+type TranscriptionStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
 
 interface Transcription {
   id: string

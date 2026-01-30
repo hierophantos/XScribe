@@ -64,8 +64,18 @@ function getStatusIcon(status: string) {
       return '⋯'
     case 'failed':
       return '✕'
+    case 'cancelled':
+      return '⊘'
     default:
       return ''
+  }
+}
+
+async function cancelTranscription(transcriptionId: string) {
+  try {
+    await window.electronAPI.transcribe.cancel(transcriptionId)
+  } catch (err) {
+    console.error('Failed to cancel transcription:', err)
   }
 }
 
@@ -229,6 +239,15 @@ defineEmits<{
               <div class="progress-fill"></div>
             </div>
           </div>
+          <button
+            class="cancel-btn"
+            title="Cancel transcription"
+            @click.stop="cancelTranscription(transcription.id)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
         </div>
       </div>
     </div>
@@ -277,7 +296,7 @@ defineEmits<{
 }
 
 .search-input::placeholder {
-  color: var(--text-tertiary);
+  color: var(--text-muted);
 }
 
 .search-input:focus {
@@ -290,7 +309,7 @@ defineEmits<{
   left: 1.5rem;
   top: 50%;
   transform: translateY(-50%);
-  color: var(--text-tertiary);
+  color: var(--text-muted);
   margin-top: 0.75rem;
 }
 
@@ -302,7 +321,7 @@ defineEmits<{
   margin-top: 0.75rem;
   background: none;
   border: none;
-  color: var(--text-tertiary);
+  color: var(--text-muted);
   cursor: pointer;
   padding: 0.25rem;
   font-size: 0.75rem;
@@ -423,7 +442,7 @@ defineEmits<{
   padding: 0.5rem 0.75rem;
   background: none;
   border: none;
-  color: var(--text-tertiary);
+  color: var(--text-muted);
   font-size: 0.8125rem;
   cursor: pointer;
   text-align: left;
@@ -439,7 +458,9 @@ defineEmits<{
 }
 
 .transcription-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   width: 100%;
   padding: 0.5rem 0.75rem;
   background: none;
@@ -447,6 +468,10 @@ defineEmits<{
   border-radius: 6px;
   cursor: pointer;
   text-align: left;
+}
+
+.transcription-item.processing {
+  cursor: default;
 }
 
 .transcription-item:hover {
@@ -457,6 +482,8 @@ defineEmits<{
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+  flex: 1;
+  min-width: 0;
 }
 
 .transcription-name {
@@ -472,7 +499,7 @@ defineEmits<{
   align-items: center;
   gap: 0.375rem;
   font-size: 0.75rem;
-  color: var(--text-tertiary);
+  color: var(--text-muted);
 }
 
 .status-icon {
@@ -498,7 +525,7 @@ defineEmits<{
 .empty-list {
   padding: 1rem;
   text-align: center;
-  color: var(--text-tertiary);
+  color: var(--text-muted);
   font-size: 0.875rem;
 }
 
@@ -566,12 +593,39 @@ defineEmits<{
   background: none;
   border: none;
   border-radius: 6px;
-  color: var(--text-tertiary);
+  color: var(--text-muted);
   cursor: pointer;
 }
 
 .settings-btn:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+}
+
+.cancel-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0.6;
+  transition: opacity 0.2s, color 0.2s, background 0.2s;
+}
+
+.cancel-btn:hover {
+  opacity: 1;
+  color: var(--error-color, #ef4444);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.status-icon.cancelled {
+  color: var(--text-muted);
 }
 </style>
