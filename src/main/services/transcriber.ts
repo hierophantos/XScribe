@@ -148,7 +148,33 @@ export class TranscriberService {
     }))
   }
 
-  async loadModel(modelName: ModelName = 'base'): Promise<boolean> {
+  /**
+   * Get the first available model, preferring English models
+   */
+  private getFirstAvailableModel(): ModelName | null {
+    const models = this.getAvailableModels()
+    // Prefer English models in order: tiny.en, base.en, small.en, then multilingual
+    const preferredOrder: ModelName[] = ['tiny.en', 'base.en', 'small.en', 'tiny', 'base', 'small']
+    for (const name of preferredOrder) {
+      const model = models.find((m) => m.name === name && m.available)
+      if (model) {
+        return name
+      }
+    }
+    return null
+  }
+
+  async loadModel(modelName?: ModelName): Promise<boolean> {
+    // Auto-detect model if not specified
+    if (!modelName) {
+      const availableModel = this.getFirstAvailableModel()
+      if (availableModel) {
+        modelName = availableModel
+        console.log(`[TranscriberService] Auto-selected model: ${modelName}`)
+      } else {
+        modelName = 'base' // Default for error message
+      }
+    }
     if (!this.modelPath) {
       throw new Error('Model directory not found')
     }
@@ -210,9 +236,9 @@ export class TranscriberService {
       onProgress?: ProgressCallback
     } = {}
   ): Promise<TranscriptionResult> {
-    // Load model if needed
+    // Load model if needed (auto-detects available model if not specified)
     if (!this.isReady || (options.model && options.model !== this.currentModel)) {
-      await this.loadModel(options.model || this.currentModel || 'base')
+      await this.loadModel(options.model || this.currentModel || undefined)
     }
 
     if (!this.recognizer) {
