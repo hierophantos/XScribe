@@ -41,43 +41,43 @@ interface TranscriptionProgress {
 type ProgressCallback = (progress: TranscriptionProgress) => void
 
 // Whisper model configurations for sherpa-onnx
-// These use the ONNX-converted whisper models
+// File names match sherpa-onnx release artifacts
 const MODEL_CONFIGS = {
   'tiny.en': {
-    encoder: 'whisper-tiny.en-encoder.onnx',
-    decoder: 'whisper-tiny.en-decoder.onnx',
-    tokens: 'whisper-tiny.en-tokens.txt',
-    size: '~60MB'
+    encoder: 'tiny.en-encoder.onnx',
+    decoder: 'tiny.en-decoder.onnx',
+    tokens: 'tiny.en-tokens.txt',
+    size: '~150MB'
   },
   tiny: {
-    encoder: 'whisper-tiny-encoder.onnx',
-    decoder: 'whisper-tiny-decoder.onnx',
-    tokens: 'whisper-tiny-tokens.txt',
-    size: '~60MB'
+    encoder: 'tiny-encoder.onnx',
+    decoder: 'tiny-decoder.onnx',
+    tokens: 'tiny-tokens.txt',
+    size: '~150MB'
   },
   'base.en': {
-    encoder: 'whisper-base.en-encoder.onnx',
-    decoder: 'whisper-base.en-decoder.onnx',
-    tokens: 'whisper-base.en-tokens.txt',
-    size: '~120MB'
+    encoder: 'base.en-encoder.onnx',
+    decoder: 'base.en-decoder.onnx',
+    tokens: 'base.en-tokens.txt',
+    size: '~280MB'
   },
   base: {
-    encoder: 'whisper-base-encoder.onnx',
-    decoder: 'whisper-base-decoder.onnx',
-    tokens: 'whisper-base-tokens.txt',
-    size: '~120MB'
+    encoder: 'base-encoder.onnx',
+    decoder: 'base-decoder.onnx',
+    tokens: 'base-tokens.txt',
+    size: '~280MB'
   },
   'small.en': {
-    encoder: 'whisper-small.en-encoder.onnx',
-    decoder: 'whisper-small.en-decoder.onnx',
-    tokens: 'whisper-small.en-tokens.txt',
-    size: '~400MB'
+    encoder: 'small.en-encoder.onnx',
+    decoder: 'small.en-decoder.onnx',
+    tokens: 'small.en-tokens.txt',
+    size: '~900MB'
   },
   small: {
-    encoder: 'whisper-small-encoder.onnx',
-    decoder: 'whisper-small-decoder.onnx',
-    tokens: 'whisper-small-tokens.txt',
-    size: '~400MB'
+    encoder: 'small-encoder.onnx',
+    decoder: 'small-decoder.onnx',
+    tokens: 'small-tokens.txt',
+    size: '~900MB'
   }
 } as const
 
