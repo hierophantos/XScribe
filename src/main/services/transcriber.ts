@@ -1,29 +1,19 @@
 /**
- * Transcription service using sherpa-onnx
+ * Transcription service using sherpa-onnx-node via child process
  *
- * Uses sherpa-onnx's Whisper implementation for transcription.
- * This avoids native addon issues and provides consistent cross-platform support.
+ * Runs sherpa-onnx-node in a separate Node.js process to avoid
+ * Electron bundling issues with native addons.
  */
 
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, readdirSync, mkdirSync, createWriteStream, unlinkSync } from 'fs'
-import { createGunzip } from 'zlib'
-import { pipeline } from 'stream/promises'
+import { spawn, ChildProcess } from 'child_process'
 import { exec } from 'child_process'
 import { promisify } from 'util'
+import { EventEmitter } from 'events'
 
 const execAsync = promisify(exec)
-
-// Lazy load sherpa-onnx to avoid startup issues
-let sherpaOnnx: typeof import('sherpa-onnx') | null = null
-
-async function getSherpaOnnx() {
-  if (!sherpaOnnx) {
-    sherpaOnnx = await import('sherpa-onnx')
-  }
-  return sherpaOnnx
-}
 
 interface TranscriptionResult {
   segments: TranscriptionSegment[]
@@ -47,59 +37,59 @@ interface TranscriptionProgress {
 type ProgressCallback = (progress: TranscriptionProgress) => void
 
 // Whisper model configurations for sherpa-onnx
-// File names match sherpa-onnx release artifacts
+// Using int8 quantized models for better compatibility
 const MODEL_CONFIGS = {
   'tiny.en': {
-    encoder: 'tiny.en-encoder.onnx',
-    decoder: 'tiny.en-decoder.onnx',
+    encoder: 'tiny.en-encoder.int8.onnx',
+    decoder: 'tiny.en-decoder.int8.onnx',
     tokens: 'tiny.en-tokens.txt',
-    size: '~150MB',
-    sizeBytes: 150_000_000,
+    size: '~100MB',
+    sizeBytes: 100_000_000,
     archiveName: 'sherpa-onnx-whisper-tiny.en.tar.bz2',
     description: 'Fastest, English only'
   },
   tiny: {
-    encoder: 'tiny-encoder.onnx',
-    decoder: 'tiny-decoder.onnx',
+    encoder: 'tiny-encoder.int8.onnx',
+    decoder: 'tiny-decoder.int8.onnx',
     tokens: 'tiny-tokens.txt',
-    size: '~150MB',
-    sizeBytes: 150_000_000,
+    size: '~100MB',
+    sizeBytes: 100_000_000,
     archiveName: 'sherpa-onnx-whisper-tiny.tar.bz2',
     description: 'Fastest, multilingual'
   },
   'base.en': {
-    encoder: 'base.en-encoder.onnx',
-    decoder: 'base.en-decoder.onnx',
+    encoder: 'base.en-encoder.int8.onnx',
+    decoder: 'base.en-decoder.int8.onnx',
     tokens: 'base.en-tokens.txt',
-    size: '~280MB',
-    sizeBytes: 280_000_000,
+    size: '~160MB',
+    sizeBytes: 160_000_000,
     archiveName: 'sherpa-onnx-whisper-base.en.tar.bz2',
     description: 'Balanced, English only'
   },
   base: {
-    encoder: 'base-encoder.onnx',
-    decoder: 'base-decoder.onnx',
+    encoder: 'base-encoder.int8.onnx',
+    decoder: 'base-decoder.int8.onnx',
     tokens: 'base-tokens.txt',
-    size: '~280MB',
-    sizeBytes: 280_000_000,
+    size: '~160MB',
+    sizeBytes: 160_000_000,
     archiveName: 'sherpa-onnx-whisper-base.tar.bz2',
     description: 'Balanced, multilingual'
   },
   'small.en': {
-    encoder: 'small.en-encoder.onnx',
-    decoder: 'small.en-decoder.onnx',
+    encoder: 'small.en-encoder.int8.onnx',
+    decoder: 'small.en-decoder.int8.onnx',
     tokens: 'small.en-tokens.txt',
-    size: '~900MB',
-    sizeBytes: 900_000_000,
+    size: '~500MB',
+    sizeBytes: 500_000_000,
     archiveName: 'sherpa-onnx-whisper-small.en.tar.bz2',
     description: 'Most accurate, English only'
   },
   small: {
-    encoder: 'small-encoder.onnx',
-    decoder: 'small-decoder.onnx',
+    encoder: 'small-encoder.int8.onnx',
+    decoder: 'small-decoder.int8.onnx',
     tokens: 'small-tokens.txt',
-    size: '~900MB',
-    sizeBytes: 900_000_000,
+    size: '~500MB',
+    sizeBytes: 500_000_000,
     archiveName: 'sherpa-onnx-whisper-small.tar.bz2',
     description: 'Most accurate, multilingual'
   }
@@ -107,17 +97,30 @@ const MODEL_CONFIGS = {
 
 const MODEL_BASE_URL = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models'
 
-type DownloadProgressCallback = (progress: { percent: number; downloadedBytes: number; totalBytes: number }) => void
+type DownloadProgressCallback = (progress: {
+  percent: number
+  downloadedBytes: number
+  totalBytes: number
+}) => void
 
 type ModelName = keyof typeof MODEL_CONFIGS
 
-export class TranscriberService {
+interface WorkerMessage {
+  type: string
+  id?: string
+  [key: string]: unknown
+}
+
+export class TranscriberService extends EventEmitter {
   private modelPath: string | null = null
   private currentModel: ModelName | null = null
-  private recognizer: ReturnType<typeof import('sherpa-onnx').createOfflineRecognizer> | null = null
+  private worker: ChildProcess | null = null
   private isReady = false
+  private pendingRequests = new Map<string, { resolve: Function; reject: Function }>()
+  private requestId = 0
 
   constructor() {
+    super()
     this.modelPath = this.findModelPath()
   }
 
@@ -140,12 +143,160 @@ export class TranscriberService {
     // Create user data models directory if none exist
     const userDataModels = join(app.getPath('userData'), 'models')
     try {
-      require('fs').mkdirSync(userDataModels, { recursive: true })
+      mkdirSync(userDataModels, { recursive: true })
       console.log(`[TranscriberService] Created model directory: ${userDataModels}`)
       return userDataModels
     } catch {
       console.warn('[TranscriberService] Could not create model directory')
       return null
+    }
+  }
+
+  /**
+   * Start the worker process
+   */
+  private async startWorker(): Promise<void> {
+    if (this.worker) {
+      return
+    }
+
+    return new Promise((resolve, reject) => {
+      // Find the worker script
+      const workerPath = join(__dirname, 'transcription-worker.js')
+
+      // For development, the worker might be in src
+      const devWorkerPath = join(process.cwd(), 'src', 'main', 'services', 'transcription-worker.js')
+
+      const actualWorkerPath = existsSync(workerPath) ? workerPath : devWorkerPath
+
+      if (!existsSync(actualWorkerPath)) {
+        reject(new Error(`Worker script not found at ${workerPath} or ${devWorkerPath}`))
+        return
+      }
+
+      console.log(`[TranscriberService] Starting worker from: ${actualWorkerPath}`)
+
+      // Get the platform-specific addon directory for sherpa-onnx native libs
+      const platformArch = `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`
+      const addonDir = join(process.cwd(), 'node_modules', `sherpa-onnx-${platformArch}`)
+
+      // Build environment with library path - MUST be set before process starts on macOS
+      const env: NodeJS.ProcessEnv = { ...process.env }
+      if (process.platform === 'darwin') {
+        env.DYLD_LIBRARY_PATH = addonDir + (env.DYLD_LIBRARY_PATH ? ':' + env.DYLD_LIBRARY_PATH : '')
+      } else if (process.platform === 'linux') {
+        env.LD_LIBRARY_PATH = addonDir + (env.LD_LIBRARY_PATH ? ':' + env.LD_LIBRARY_PATH : '')
+      }
+
+      console.log(`[TranscriberService] Setting library path to: ${addonDir}`)
+
+      // Spawn the worker as a child process with correct environment
+      this.worker = spawn('node', [actualWorkerPath], {
+        cwd: process.cwd(),
+        env,
+        stdio: ['pipe', 'pipe', 'pipe']
+      })
+
+      // Handle stdout (JSON messages)
+      this.worker.stdout?.on('data', (data: Buffer) => {
+        const lines = data.toString().split('\n').filter((l) => l.trim())
+        for (const line of lines) {
+          try {
+            const msg = JSON.parse(line) as WorkerMessage
+            this.handleWorkerMessage(msg)
+
+            // Resolve startup promise on ready
+            if (msg.type === 'ready') {
+              console.log(`[TranscriberService] Worker ready, version: ${msg.version}`)
+              resolve()
+            }
+          } catch (err) {
+            console.error('[TranscriberService] Failed to parse worker message:', line)
+          }
+        }
+      })
+
+      // Handle stderr
+      this.worker.stderr?.on('data', (data: Buffer) => {
+        console.error('[TranscriberService] Worker stderr:', data.toString())
+      })
+
+      // Handle worker exit
+      this.worker.on('exit', (code) => {
+        console.log(`[TranscriberService] Worker exited with code ${code}`)
+        this.worker = null
+        this.isReady = false
+
+        // Reject all pending requests
+        for (const [id, { reject }] of this.pendingRequests) {
+          reject(new Error('Worker exited unexpectedly'))
+        }
+        this.pendingRequests.clear()
+      })
+
+      // Handle errors
+      this.worker.on('error', (err) => {
+        console.error('[TranscriberService] Worker error:', err)
+        reject(err)
+      })
+
+      // Timeout for startup
+      setTimeout(() => {
+        if (!this.isReady && this.worker) {
+          reject(new Error('Worker startup timeout'))
+        }
+      }, 10000)
+    })
+  }
+
+  /**
+   * Send a message to the worker and wait for response
+   */
+  private sendToWorker<T>(msg: Omit<WorkerMessage, 'id'>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      if (!this.worker?.stdin) {
+        reject(new Error('Worker not running'))
+        return
+      }
+
+      const id = String(++this.requestId)
+      this.pendingRequests.set(id, { resolve, reject })
+
+      const fullMsg = { ...msg, id }
+      this.worker.stdin.write(JSON.stringify(fullMsg) + '\n')
+
+      // Timeout for request
+      setTimeout(() => {
+        if (this.pendingRequests.has(id)) {
+          this.pendingRequests.delete(id)
+          reject(new Error('Request timeout'))
+        }
+      }, 300000) // 5 minute timeout for long transcriptions
+    })
+  }
+
+  /**
+   * Handle messages from the worker
+   */
+  private handleWorkerMessage(msg: WorkerMessage): void {
+    const { type, id } = msg
+
+    // Handle progress updates (no response needed)
+    if (type === 'progress') {
+      this.emit('progress', msg)
+      return
+    }
+
+    // Handle responses to pending requests
+    if (id && this.pendingRequests.has(id)) {
+      const { resolve, reject } = this.pendingRequests.get(id)!
+      this.pendingRequests.delete(id)
+
+      if (type === 'error') {
+        reject(new Error(msg.error as string))
+      } else {
+        resolve(msg)
+      }
     }
   }
 
@@ -195,6 +346,11 @@ export class TranscriberService {
   }
 
   async loadModel(modelName?: ModelName): Promise<boolean> {
+    // Start worker if not running
+    if (!this.worker) {
+      await this.startWorker()
+    }
+
     // Auto-detect model if not specified
     if (!modelName) {
       const availableModel = this.getFirstAvailableModel()
@@ -205,6 +361,7 @@ export class TranscriberService {
         modelName = 'base' // Default for error message
       }
     }
+
     if (!this.modelPath) {
       throw new Error('Model directory not found')
     }
@@ -214,11 +371,11 @@ export class TranscriberService {
       throw new Error(`Unknown model: ${modelName}. Available: ${Object.keys(MODEL_CONFIGS).join(', ')}`)
     }
 
+    // Check all required files exist locally first
     const encoderPath = join(this.modelPath, config.encoder)
     const decoderPath = join(this.modelPath, config.decoder)
     const tokensPath = join(this.modelPath, config.tokens)
 
-    // Check all required files exist
     const missing: string[] = []
     if (!existsSync(encoderPath)) missing.push(config.encoder)
     if (!existsSync(decoderPath)) missing.push(config.decoder)
@@ -232,19 +389,16 @@ export class TranscriberService {
     }
 
     try {
-      const sherpa = await getSherpaOnnx()
+      console.log(`[TranscriberService] Loading model: ${modelName}`)
 
-      // Create offline recognizer with Whisper model
-      this.recognizer = sherpa.createOfflineRecognizer({
-        modelConfig: {
-          whisper: {
-            encoder: encoderPath,
-            decoder: decoderPath
-          },
-          tokens: tokensPath,
-          numThreads: 2,
-          provider: 'cpu',
-          debug: 0
+      await this.sendToWorker({
+        type: 'loadModel',
+        modelPath: this.modelPath,
+        modelName,
+        config: {
+          encoder: config.encoder,
+          decoder: config.decoder,
+          tokens: config.tokens
         }
       })
 
@@ -271,66 +425,44 @@ export class TranscriberService {
       await this.loadModel(options.model || this.currentModel || undefined)
     }
 
-    if (!this.recognizer) {
-      throw new Error('Recognizer not initialized')
-    }
-
     console.log(`[TranscriberService] Transcribing: ${filePath}`)
 
+    // Set up progress listener
+    const progressHandler = (msg: WorkerMessage) => {
+      if (options.onProgress) {
+        options.onProgress({
+          percent: (msg.percent as number) || 0,
+          currentTime: 0,
+          totalTime: 0
+        })
+      }
+    }
+    this.on('progress', progressHandler)
+
     try {
-      const sherpa = await getSherpaOnnx()
-
-      // Report initial progress
-      options.onProgress?.({ percent: 10, currentTime: 0, totalTime: 0 })
-
-      // Read the audio file
-      const waveData = sherpa.readWave(filePath)
-      const totalDuration = waveData.samples.length / waveData.sampleRate
-
-      options.onProgress?.({ percent: 30, currentTime: 0, totalTime: totalDuration })
-
-      // Create a stream and process
-      const stream = this.recognizer.createStream()
-      stream.acceptWaveform(waveData.sampleRate, waveData.samples)
-
-      options.onProgress?.({ percent: 50, currentTime: 0, totalTime: totalDuration })
-
-      // Decode
-      this.recognizer.decode(stream)
-
-      options.onProgress?.({ percent: 90, currentTime: totalDuration, totalTime: totalDuration })
-
-      // Get result
-      const result = this.recognizer.getResult(stream)
-
-      options.onProgress?.({ percent: 100, currentTime: totalDuration, totalTime: totalDuration })
+      const result = (await this.sendToWorker({
+        type: 'transcribe',
+        filePath
+      })) as { text: string; duration: number; timestamps: number[] }
 
       // Parse the result into segments
-      // sherpa-onnx offline recognizer returns text, we'll create a single segment
-      // For word-level timestamps, we'd need to use a different model configuration
       const segments: TranscriptionSegment[] = result.text.trim()
         ? [
             {
               start: 0,
-              end: totalDuration,
+              end: result.duration,
               text: result.text.trim()
             }
           ]
         : []
 
-      // If timestamps are available in the result
-      if (result.timestamps && result.timestamps.length > 0) {
-        // TODO: Parse word-level timestamps into segments
-      }
-
       return {
         segments,
         language: options.language || 'auto',
-        duration: totalDuration
+        duration: result.duration
       }
-    } catch (error) {
-      console.error('[TranscriberService] Transcription failed:', error)
-      throw error
+    } finally {
+      this.off('progress', progressHandler)
     }
   }
 
@@ -349,10 +481,7 @@ export class TranscriberService {
   /**
    * Download a model from sherpa-onnx releases
    */
-  async downloadModel(
-    modelName: ModelName,
-    onProgress?: DownloadProgressCallback
-  ): Promise<boolean> {
+  async downloadModel(modelName: ModelName, onProgress?: DownloadProgressCallback): Promise<boolean> {
     if (!this.modelPath) {
       throw new Error('Model directory not found')
     }
@@ -459,9 +588,31 @@ export class TranscriberService {
     }
   }
 
+  /**
+   * Cancel the current transcription by killing the worker
+   */
+  cancelCurrentTranscription(): void {
+    console.log('[TranscriberService] Cancelling current transcription...')
+    if (this.worker) {
+      this.worker.kill()
+      this.worker = null
+      this.isReady = false
+
+      // Reject all pending requests with cancellation error
+      for (const [, { reject }] of this.pendingRequests) {
+        reject(new Error('Transcription cancelled'))
+      }
+      this.pendingRequests.clear()
+    }
+  }
+
   dispose(): void {
-    this.recognizer = null
+    if (this.worker) {
+      this.worker.kill()
+      this.worker = null
+    }
     this.isReady = false
+    this.pendingRequests.clear()
   }
 }
 
