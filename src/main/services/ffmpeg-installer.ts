@@ -2,15 +2,42 @@
  * FFmpeg Installer Service
  *
  * Handles detection and installation of ffmpeg for different platforms.
- * Prefers bundled ffmpeg-static, falls back to system ffmpeg.
+ * Detection order:
+ * 1. Bundled ffmpeg-static (ASAR-unpacked)
+ * 2. Downloaded ffmpeg (in userData)
+ * 3. System ffmpeg (in PATH)
  */
 
-import { exec, execSync, spawn } from 'child_process'
+import { exec, spawn } from 'child_process'
 import { promisify } from 'util'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync, createWriteStream, chmodSync } from 'fs'
+import { rm } from 'fs/promises'
+import { join } from 'path'
 import { app, dialog, BrowserWindow } from 'electron'
+import https from 'https'
 
 const execAsync = promisify(exec)
+
+// FFmpeg download URLs for runtime installation
+interface FFmpegDownloadInfo {
+  url: string
+  binaryPath: string // Path to ffmpeg binary within the extracted archive
+}
+
+const FFMPEG_DOWNLOADS: Record<string, FFmpegDownloadInfo> = {
+  win32: {
+    url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
+    binaryPath: 'ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe'
+  },
+  darwin: {
+    url: 'https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip',
+    binaryPath: 'ffmpeg'
+  },
+  linux: {
+    url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz',
+    binaryPath: 'ffmpeg-master-latest-linux64-gpl/bin/ffmpeg'
+  }
+}
 
 interface FFmpegStatus {
   installed: boolean
@@ -21,44 +48,107 @@ interface FFmpegStatus {
 
 /**
  * Get the path to the bundled ffmpeg binary from ffmpeg-static
+ * Handles ASAR unpacking for packaged apps
  */
 function getBundledFFmpegPath(): string | null {
+  // For packaged apps, manually construct the path to the ASAR-unpacked binary
+  // require('ffmpeg-static') returns a path inside the ASAR archive which doesn't work
+  if (app.isPackaged) {
+    const binaryName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+    const unpackedPath = join(
+      process.resourcesPath,
+      'app.asar.unpacked',
+      'node_modules',
+      'ffmpeg-static',
+      binaryName
+    )
+
+    if (existsSync(unpackedPath)) {
+      console.log('[FFmpeg] Found bundled ffmpeg at:', unpackedPath)
+      return unpackedPath
+    }
+    console.log('[FFmpeg] Bundled ffmpeg not found at:', unpackedPath)
+  }
+
+  // Development: use ffmpeg-static directly
   try {
-    // Try to require ffmpeg-static which returns the path to the binary
     const ffmpegStatic = require('ffmpeg-static')
     if (ffmpegStatic && existsSync(ffmpegStatic)) {
+      console.log('[FFmpeg] Using ffmpeg-static:', ffmpegStatic)
       return ffmpegStatic
     }
   } catch {
     // ffmpeg-static not available
   }
+
   return null
 }
 
 /**
+ * Get the path to downloaded ffmpeg in userData
+ */
+function getDownloadedFFmpegPath(): string | null {
+  const binaryName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const downloadedPath = join(app.getPath('userData'), 'ffmpeg', binaryName)
+
+  if (existsSync(downloadedPath)) {
+    console.log('[FFmpeg] Found downloaded ffmpeg at:', downloadedPath)
+    return downloadedPath
+  }
+
+  return null
+}
+
+/**
+ * Verify ffmpeg works by running -version
+ */
+async function verifyFFmpeg(ffmpegPath: string): Promise<{ version: string } | null> {
+  try {
+    const { stdout } = await execAsync(`"${ffmpegPath}" -version`)
+    const versionMatch = stdout.match(/ffmpeg version (\S+)/)
+    const version = versionMatch ? versionMatch[1] : 'unknown'
+    return { version }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Check if ffmpeg is installed and available
- * Prefers bundled ffmpeg-static, falls back to system ffmpeg
+ * Detection order: bundled → downloaded → system
  */
 export async function checkFFmpeg(): Promise<FFmpegStatus> {
-  // First check for bundled ffmpeg
+  // Tier 1: Check for bundled ffmpeg (ASAR-unpacked)
   const bundledPath = getBundledFFmpegPath()
   if (bundledPath) {
-    try {
-      const { stdout } = await execAsync(`"${bundledPath}" -version`)
-      const versionMatch = stdout.match(/ffmpeg version (\S+)/)
-      const version = versionMatch ? versionMatch[1] : 'unknown'
+    const result = await verifyFFmpeg(bundledPath)
+    if (result) {
       return {
         installed: true,
         path: bundledPath,
-        version,
+        version: result.version,
         bundled: true
       }
-    } catch {
-      // Bundled ffmpeg failed, try system ffmpeg
     }
+    console.log('[FFmpeg] Bundled ffmpeg verification failed')
   }
 
-  // Fall back to system ffmpeg
+  // Tier 2: Check for downloaded ffmpeg in userData
+  const downloadedPath = getDownloadedFFmpegPath()
+  if (downloadedPath) {
+    const result = await verifyFFmpeg(downloadedPath)
+    if (result) {
+      return {
+        installed: true,
+        path: downloadedPath,
+        version: result.version,
+        bundled: false // Downloaded, not bundled
+      }
+    }
+    console.log('[FFmpeg] Downloaded ffmpeg verification failed')
+  }
+
+  // Tier 3: Fall back to system ffmpeg
   try {
     const { stdout } = await execAsync('ffmpeg -version')
     const versionMatch = stdout.match(/ffmpeg version (\S+)/)
@@ -109,8 +199,8 @@ export function getInstallInstructions(): {
     case 'win32':
       return {
         platform: 'Windows',
-        method: 'winget or manual download',
-        command: 'winget install ffmpeg',
+        method: 'Automatic download',
+        command: undefined, // We download automatically
         manualUrl: 'https://ffmpeg.org/download.html#build-windows'
       }
     case 'linux':
@@ -150,6 +240,182 @@ async function checkWinget(): Promise<boolean> {
     return true
   } catch {
     return false
+  }
+}
+
+/**
+ * Download a file with progress callback
+ */
+function downloadFile(
+  url: string,
+  destPath: string,
+  onProgress?: (percent: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const file = createWriteStream(destPath)
+
+    const request = (currentUrl: string) => {
+      https.get(currentUrl, (response) => {
+        // Handle redirects
+        if (response.statusCode === 302 || response.statusCode === 301) {
+          const redirectUrl = response.headers.location
+          if (redirectUrl) {
+            request(redirectUrl)
+            return
+          }
+        }
+
+        if (response.statusCode !== 200) {
+          file.close()
+          reject(new Error(`Download failed: ${response.statusCode}`))
+          return
+        }
+
+        const totalSize = parseInt(response.headers['content-length'] || '0', 10)
+        let downloadedSize = 0
+
+        response.on('data', (chunk) => {
+          downloadedSize += chunk.length
+          if (totalSize > 0 && onProgress) {
+            onProgress((downloadedSize / totalSize) * 100)
+          }
+        })
+
+        response.pipe(file)
+
+        file.on('finish', () => {
+          file.close()
+          resolve()
+        })
+      }).on('error', (err) => {
+        file.close()
+        reject(err)
+      })
+    }
+
+    request(url)
+  })
+}
+
+/**
+ * Extract ZIP file (Windows/macOS)
+ */
+async function extractZip(zipPath: string, destDir: string, binaryPath: string): Promise<string> {
+  const AdmZip = require('adm-zip')
+  const zip = new AdmZip(zipPath)
+
+  // Extract the ffmpeg binary
+  const entries = zip.getEntries()
+  const ffmpegEntry = entries.find((e: { entryName: string }) =>
+    e.entryName === binaryPath || e.entryName.endsWith('/ffmpeg.exe') || e.entryName.endsWith('/ffmpeg')
+  )
+
+  if (!ffmpegEntry) {
+    throw new Error(`FFmpeg binary not found in archive at path: ${binaryPath}`)
+  }
+
+  // Extract just the ffmpeg binary to destDir
+  const binaryName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const outputPath = join(destDir, binaryName)
+
+  zip.extractEntryTo(ffmpegEntry, destDir, false, true, false, binaryName)
+
+  return outputPath
+}
+
+/**
+ * Extract tar.xz file (Linux)
+ */
+async function extractTarXz(tarPath: string, destDir: string, binaryPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // Extract with tar, then find and move the ffmpeg binary
+    const proc = spawn('tar', ['-xJf', tarPath, '-C', destDir, '--strip-components=2', binaryPath], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve(join(destDir, 'ffmpeg'))
+      } else {
+        reject(new Error(`tar extraction failed with code ${code}`))
+      }
+    })
+
+    proc.on('error', reject)
+  })
+}
+
+/**
+ * Download and install FFmpeg to userData directory
+ */
+export async function downloadFFmpeg(
+  onProgress?: (message: string, percent?: number) => void
+): Promise<{ success: boolean; path?: string; error?: string }> {
+  const downloadInfo = FFMPEG_DOWNLOADS[process.platform]
+  if (!downloadInfo) {
+    return { success: false, error: `Unsupported platform: ${process.platform}` }
+  }
+
+  const ffmpegDir = join(app.getPath('userData'), 'ffmpeg')
+  const binaryName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const finalPath = join(ffmpegDir, binaryName)
+
+  try {
+    // Create directory
+    if (!existsSync(ffmpegDir)) {
+      mkdirSync(ffmpegDir, { recursive: true })
+    }
+
+    // Determine archive extension and path
+    const isZip = downloadInfo.url.endsWith('.zip')
+    const archiveExt = isZip ? '.zip' : '.tar.xz'
+    const archivePath = join(ffmpegDir, `ffmpeg-download${archiveExt}`)
+
+    // Download
+    onProgress?.('Downloading FFmpeg...', 0)
+    console.log('[FFmpeg] Downloading from:', downloadInfo.url)
+
+    await downloadFile(downloadInfo.url, archivePath, (percent) => {
+      onProgress?.(`Downloading FFmpeg... ${Math.round(percent)}%`, percent)
+    })
+
+    // Extract
+    onProgress?.('Extracting FFmpeg...', 100)
+    console.log('[FFmpeg] Extracting to:', ffmpegDir)
+
+    if (isZip) {
+      await extractZip(archivePath, ffmpegDir, downloadInfo.binaryPath)
+    } else {
+      await extractTarXz(archivePath, ffmpegDir, downloadInfo.binaryPath)
+    }
+
+    // Make executable on Unix
+    if (process.platform !== 'win32' && existsSync(finalPath)) {
+      chmodSync(finalPath, 0o755)
+    }
+
+    // Clean up archive
+    await rm(archivePath, { force: true })
+
+    // Verify it works
+    const verified = await verifyFFmpeg(finalPath)
+    if (!verified) {
+      return { success: false, error: 'Downloaded FFmpeg failed verification' }
+    }
+
+    onProgress?.('FFmpeg installed successfully!', 100)
+    console.log('[FFmpeg] Successfully installed to:', finalPath)
+
+    // Clear cache so next check finds the downloaded version
+    clearFFmpegCache()
+
+    return { success: true, path: finalPath }
+  } catch (error) {
+    console.error('[FFmpeg] Download failed:', error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }
   }
 }
 
@@ -247,60 +513,38 @@ export async function installFFmpeg(
         })
       })
     } else if (platform === 'win32') {
-      // Windows - use winget
-      const hasWinget = await checkWinget()
+      // Windows - download FFmpeg directly (no winget dependency)
+      onProgress?.('Downloading FFmpeg...')
 
-      if (!hasWinget) {
-        // Winget not available, show manual instructions
-        const result = await dialog.showMessageBox(mainWindow!, {
-          type: 'info',
-          buttons: ['Open Download Page', 'Cancel'],
-          defaultId: 0,
-          title: 'Manual Installation Required',
-          message: 'Please install ffmpeg manually',
+      const result = await downloadFFmpeg((message) => {
+        onProgress?.(message)
+      })
+
+      if (result.success) {
+        return { success: true }
+      } else {
+        // Download failed, offer manual fallback
+        const dialogResult = await dialog.showMessageBox(mainWindow!, {
+          type: 'error',
+          buttons: ['Open Download Page', 'Try Again', 'Cancel'],
+          defaultId: 1,
+          title: 'FFmpeg Download Failed',
+          message: 'Failed to download FFmpeg automatically',
           detail:
-            'Windows Package Manager (winget) is not available.\n\n' +
-            'Please download ffmpeg from the official website and add it to your PATH.\n\n' +
-            'After installation, restart XScribe.'
+            `Error: ${result.error}\n\n` +
+            'You can try again or download FFmpeg manually from the official website.'
         })
 
-        if (result.response === 0) {
+        if (dialogResult.response === 0) {
           const { shell } = await import('electron')
           shell.openExternal('https://ffmpeg.org/download.html#build-windows')
+        } else if (dialogResult.response === 1) {
+          // Try again
+          return installFFmpeg(mainWindow, onProgress)
         }
 
-        return { success: false, error: 'Manual installation required' }
+        return { success: false, error: result.error }
       }
-
-      // Use winget to install
-      onProgress?.('Installing ffmpeg via winget...')
-
-      return new Promise((resolve) => {
-        const child = spawn('winget', ['install', 'ffmpeg', '--silent'], {
-          stdio: ['ignore', 'pipe', 'pipe'],
-          shell: true
-        })
-
-        child.stdout?.on('data', (data) => {
-          const lines = data.toString().split('\n')
-          const lastLine = lines.filter((l: string) => l.trim()).pop()
-          if (lastLine) {
-            onProgress?.(lastLine.trim())
-          }
-        })
-
-        child.on('close', (code) => {
-          if (code === 0) {
-            resolve({ success: true })
-          } else {
-            resolve({ success: false, error: `winget install failed with code ${code}` })
-          }
-        })
-
-        child.on('error', (err) => {
-          resolve({ success: false, error: err.message })
-        })
-      })
     } else if (platform === 'linux') {
       // Linux - show instructions for manual installation
       // We can't easily auto-install because of sudo requirements and different distros
