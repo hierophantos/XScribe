@@ -208,9 +208,10 @@ export class WhisperXTranscriberService extends EventEmitter {
     })
 
     // Build environment with correct paths
-    const pythonDir = app.isPackaged
-      ? join(process.resourcesPath, 'python')
-      : join(process.cwd(), 'python', 'venv')
+    // Use SetupService to get the correct Python directory for all build types
+    // (bundled, lite, development)
+    const setupService = getSetupService()
+    const pythonDir = setupService.getPythonDir()
 
     const env = {
       ...process.env,
