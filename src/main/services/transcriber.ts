@@ -280,14 +280,17 @@ export class TranscriberService extends EventEmitter {
       let timeoutId: NodeJS.Timeout
 
       // Renewable timeout - resets when progress is received
+      // Note: 30 minutes is needed because:
+      // - recognizer.decode() is synchronous/blocking (60-120+ seconds per 30-sec chunk)
+      // - diarizer.process() is also blocking and can take 10-20+ minutes for long audio
       const resetTimeout = () => {
         clearTimeout(timeoutId)
         timeoutId = setTimeout(() => {
           if (this.pendingRequests.has(id)) {
             this.pendingRequests.delete(id)
-            reject(new Error('Request timeout - no progress for 60 seconds'))
+            reject(new Error('Request timeout - no progress for 30 minutes'))
           }
-        }, 60000) // 1 minute between progress updates
+        }, 1800000) // 30 minutes - diarization can take very long for long files
       }
 
       this.pendingRequests.set(id, { resolve, reject, resetTimeout })

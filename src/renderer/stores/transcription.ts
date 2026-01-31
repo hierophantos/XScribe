@@ -35,6 +35,8 @@ interface TranscriptionProgress {
   percent: number
   currentTime: number
   totalTime: number
+  stage?: 'transcribing' | 'diarizing'
+  stageLabel?: string
 }
 
 type TranscriptionStatus = 'idle' | 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
@@ -289,6 +291,18 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     }
   }
 
+  /**
+   * Switch to viewing a processing transcription (shows progress view)
+   */
+  function viewProcessingTranscription(id: string) {
+    activeTranscriptionId.value = id
+    status.value = 'processing'
+    // Clear any loaded segments from a previous transcription
+    segments.value = []
+    speakers.value = []
+    error.value = null
+  }
+
   return {
     // State
     activeTranscriptionId,
@@ -311,6 +325,7 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     clearTranscription,
     renameSpeaker,
     startTranscription,
+    viewProcessingTranscription,
 
     // Event handlers
     onTranscriptionCreated,

@@ -127,6 +127,7 @@ async function deleteTranscription() {
 
 defineEmits<{
   (e: 'select-transcription', id: string): void
+  (e: 'select-processing', id: string): void
   (e: 'new-transcription'): void
 }>()
 </script>
@@ -279,6 +280,10 @@ defineEmits<{
           v-for="transcription in libraryStore.processingTranscriptions"
           :key="transcription.id"
           class="transcription-item processing"
+          role="button"
+          tabindex="0"
+          @click="$emit('select-processing', transcription.id)"
+          @keydown.enter="$emit('select-processing', transcription.id)"
         >
           <div class="transcription-info">
             <span class="transcription-name">{{ transcription.fileName }}</span>
@@ -537,7 +542,7 @@ defineEmits<{
 }
 
 .transcription-item.processing {
-  cursor: default;
+  cursor: pointer;
 }
 
 .transcription-item:hover {

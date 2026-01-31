@@ -162,10 +162,19 @@ ipcMain.handle(
       })
 
       // Send progress updates to renderer
+      // Scale to 0-70% if diarization is enabled, otherwise 0-100%
       const sendProgress = (progress: { percent: number; currentTime: number; totalTime: number }) => {
+        const scaledPercent = options?.useDiarization
+          ? Math.round(progress.percent * 0.7)
+          : progress.percent
+
         event.sender.send('transcribe:progress', {
           id: transcriptionRecord.id,
-          ...progress
+          percent: scaledPercent,
+          currentTime: progress.currentTime,
+          totalTime: progress.totalTime,
+          stage: 'transcribing',
+          stageLabel: 'Transcribing audio...'
         })
       }
 
@@ -200,8 +209,41 @@ ipcMain.handle(
 
       // If diarization is requested, identify speakers
       if (options?.useDiarization) {
+        console.log('[Main] Starting diarization...')
+
+        // Send diarization start progress
+        event.sender.send('transcribe:progress', {
+          id: transcriptionRecord.id,
+          percent: 70,
+          currentTime: 0,
+          totalTime: 0,
+          stage: 'diarizing',
+          stageLabel: 'Identifying speakers...'
+        })
+
         try {
-          const diarization = await diarizer.diarize(filePath)
+          const diarization = await diarizer.diarize(filePath, {
+            onProgress: (progress) => {
+              // Scale diarization progress from 0-100 to 70-100
+              const scaledPercent = 70 + Math.round(progress.percent * 0.3)
+              event.sender.send('transcribe:progress', {
+                id: transcriptionRecord.id,
+                percent: scaledPercent,
+                currentTime: 0,
+                totalTime: 0,
+                stage: 'diarizing',
+                stageLabel: `Identifying speakers (${progress.stage})...`
+              })
+            }
+          })
+
+          // DEBUG: Log diarization results
+          console.log('[Main] Diarization completed:', {
+            speakerCount: diarization.speakers.length,
+            speakers: diarization.speakers,
+            segmentCount: diarization.segments.length,
+            sampleSegments: diarization.segments.slice(0, 3)
+          })
 
           // Merge transcription with speaker labels
           finalSegments = mergeTranscriptionWithDiarization(
@@ -209,12 +251,20 @@ ipcMain.handle(
             diarization
           )
 
+          // DEBUG: Log merged segments
+          console.log('[Main] Merged segments:', {
+            count: finalSegments.length,
+            withSpeaker: finalSegments.filter((s) => s.speaker).length,
+            sampleSegments: finalSegments.slice(0, 3)
+          })
+
           // Save speakers to database
           const uniqueSpeakers = [...new Set(diarization.speakers)]
           const speakersData = uniqueSpeakers.map((speakerId, index) => ({
             speakerId,
             displayName: `Speaker ${index + 1}`
           }))
+          console.log('[Main] Saving speakers:', speakersData)
           await db.saveSpeakers(transcriptionRecord.id, speakersData)
         } catch (diarizationError) {
           console.warn('[Main] Diarization failed, continuing without speaker labels:', diarizationError)
@@ -228,6 +278,14 @@ ipcMain.handle(
         endTime: seg.end,
         text: seg.text
       }))
+
+      // DEBUG: Log segments being saved
+      console.log('[Main] Saving segments:', {
+        count: segmentsData.length,
+        withSpeakerId: segmentsData.filter((s) => s.speakerId).length,
+        sample: segmentsData.slice(0, 3)
+      })
+
       db.saveSegments(transcriptionRecord.id, segmentsData)
 
       // Update transcription record with completion info
@@ -501,6 +559,16 @@ ipcMain.handle(
 
     const segments = db.getSegments(transcriptionId)
     const speakers = db.getSpeakers(transcriptionId)
+
+    // DEBUG: Log export data
+    console.log('[Main] Export data:', {
+      format,
+      segmentCount: segments.length,
+      withSpeakerId: segments.filter((s) => s.speakerId).length,
+      speakerCount: speakers.length,
+      speakers: speakers,
+      sampleSegments: segments.slice(0, 3)
+    })
 
     // Export
     const result = await exporter.export(format, transcription, segments, speakers)

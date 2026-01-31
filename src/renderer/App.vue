@@ -65,6 +65,13 @@ function handleSelectTranscription(id: string) {
   currentFile.value = null
 }
 
+function handleSelectProcessing(id: string) {
+  // Switch to viewing the processing transcription (shows progress view)
+  transcriptionStore.viewProcessingTranscription(id)
+  showDropZone.value = false
+  currentFile.value = null
+}
+
 function handleNewTranscription() {
   transcriptionStore.clearTranscription()
   currentFile.value = null
@@ -99,6 +106,7 @@ onMounted(() => {
 
     <LibrarySidebar
       @select-transcription="handleSelectTranscription"
+      @select-processing="handleSelectProcessing"
       @new-transcription="handleNewTranscription"
     />
 
@@ -157,7 +165,7 @@ onMounted(() => {
 
         <div class="processing-state">
           <div class="spinner"></div>
-          <p>Transcribing audio...</p>
+          <p>{{ transcriptionStore.progress?.stageLabel || 'Processing...' }}</p>
           <ProgressBar :percent="progressPercent" />
         </div>
       </div>
