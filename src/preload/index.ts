@@ -367,6 +367,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('export:save', transcriptionId, format),
     project: (projectId: string, format: ExportFormat): Promise<{ exportDir: string; count: number } | null> =>
       ipcRenderer.invoke('export:project', projectId, format)
+  },
+
+  // Setup (first-run)
+  setup: {
+    isComplete: (): Promise<boolean> => ipcRenderer.invoke('setup:isComplete'),
+    run: (): Promise<void> => ipcRenderer.invoke('setup:run'),
+    reset: (): Promise<void> => ipcRenderer.invoke('setup:reset'),
+    getPythonPath: (): Promise<string> => ipcRenderer.invoke('setup:getPythonPath')
+  },
+  onSetupProgress: (
+    callback: (progress: { stage: string; percent: number; message: string; error?: string }) => void
+  ) => {
+    ipcRenderer.on('setup:progress', (_event, progress) => callback(progress))
   }
 })
 
@@ -485,6 +498,15 @@ declare global {
         save: (transcriptionId: string, format: ExportFormat) => Promise<string | null>
         project: (projectId: string, format: ExportFormat) => Promise<{ exportDir: string; count: number } | null>
       }
+      setup: {
+        isComplete: () => Promise<boolean>
+        run: () => Promise<void>
+        reset: () => Promise<void>
+        getPythonPath: () => Promise<string>
+      }
+      onSetupProgress: (
+        callback: (progress: { stage: string; percent: number; message: string; error?: string }) => void
+      ) => void
     }
   }
 }

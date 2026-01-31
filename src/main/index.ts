@@ -808,6 +808,36 @@ ipcMain.handle(
   }
 )
 
+// ============ Setup IPC Handlers ============
+
+import { getSetupService } from './services/setup-service'
+
+ipcMain.handle('setup:isComplete', async () => {
+  const setupService = getSetupService()
+  return await setupService.isSetupComplete()
+})
+
+ipcMain.handle('setup:run', async () => {
+  const setupService = getSetupService()
+
+  await setupService.runSetup((progress) => {
+    // Send progress to renderer
+    if (mainWindow) {
+      mainWindow.webContents.send('setup:progress', progress)
+    }
+  })
+})
+
+ipcMain.handle('setup:reset', async () => {
+  const setupService = getSetupService()
+  await setupService.resetSetup()
+})
+
+ipcMain.handle('setup:getPythonPath', () => {
+  const setupService = getSetupService()
+  return setupService.getPythonPath()
+})
+
 // ============ App Lifecycle ============
 
 app.whenReady().then(() => {

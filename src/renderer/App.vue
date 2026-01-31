@@ -14,10 +14,15 @@ import AddProjectModal from './components/AddProjectModal.vue'
 import EditProjectModal from './components/EditProjectModal.vue'
 import TranscriptionDetailsModal from './components/TranscriptionDetailsModal.vue'
 import ModelSelector from './components/ModelSelector.vue'
+import SetupWizard from './components/SetupWizard.vue'
 
 const libraryStore = useLibraryStore()
 const transcriptionStore = useTranscriptionStore()
 const uiStore = useUIStore()
+
+// Setup state
+const isCheckingSetup = ref(true)
+const needsSetup = ref(false)
 
 const currentFile = ref<string | null>(null)
 const showDropZone = ref(true)
@@ -149,8 +154,12 @@ watch(
   }
 )
 
-onMounted(async () => {
-  // Load user's default model preference
+// Called when setup completes (first run or already complete)
+async function onSetupComplete() {
+  needsSetup.value = false
+  isCheckingSetup.value = false
+
+  // Now initialize the app
   loadDefaultModel()
 
   // Load pending queue from database and resume processing
@@ -159,11 +168,35 @@ onMounted(async () => {
     console.log(`[App] Found ${transcriptionStore.pendingQueue.length} pending transcriptions, resuming...`)
     transcriptionStore.processQueue()
   }
+}
+
+onMounted(async () => {
+  // Check if first-run setup is needed
+  try {
+    const setupComplete = await window.electronAPI.setup.isComplete()
+    if (setupComplete) {
+      // Already set up, proceed normally
+      onSetupComplete()
+    } else {
+      // Show setup wizard
+      needsSetup.value = true
+      isCheckingSetup.value = false
+    }
+  } catch (err) {
+    console.error('Failed to check setup status:', err)
+    // Assume setup needed on error
+    needsSetup.value = true
+    isCheckingSetup.value = false
+  }
 })
 </script>
 
 <template>
-  <div class="app-container">
+  <!-- Setup Wizard (first-run) -->
+  <SetupWizard v-if="needsSetup || isCheckingSetup" @setup-complete="onSetupComplete" />
+
+  <!-- Main App (after setup complete) -->
+  <div v-else class="app-container">
     <!-- Global title bar drag region spanning entire window -->
     <div class="titlebar"></div>
 
