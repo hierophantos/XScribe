@@ -18,6 +18,7 @@ import { existsSync, readdirSync } from 'fs'
 import { spawn, ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { homedir } from 'os'
+import { getSetupService } from './setup-service'
 
 // Word-level timestamp data
 interface WordTimestamp {
@@ -155,37 +156,19 @@ export class WhisperXTranscriberService extends EventEmitter {
 
   /**
    * Get the path to the Python executable
+   * Delegates to SetupService which handles bundled, lite, and development builds
    */
   private getPythonPath(): string | null {
-    if (app.isPackaged) {
-      // Production: Python is bundled in resources
-      const resourcesPath = process.resourcesPath
-      const pythonPath = process.platform === 'win32'
-        ? join(resourcesPath, 'python', 'python.exe')
-        : join(resourcesPath, 'python', 'bin', 'python3')
+    const setupService = getSetupService()
+    const pythonPath = setupService.getPythonPath()
 
-      if (existsSync(pythonPath)) {
-        console.log('[WhisperXTranscriberService] Using bundled Python:', pythonPath)
-        return pythonPath
-      }
-      console.error('[WhisperXTranscriberService] Bundled Python not found at:', pythonPath)
-      return null
+    if (existsSync(pythonPath)) {
+      console.log('[WhisperXTranscriberService] Using Python:', pythonPath)
+      return pythonPath
     }
 
-    // Development: use local venv or system Python
-    const venvPython = process.platform === 'win32'
-      ? join(process.cwd(), 'python', 'venv', 'Scripts', 'python.exe')
-      : join(process.cwd(), 'python', 'venv', 'bin', 'python3')
-
-    if (existsSync(venvPython)) {
-      console.log('[WhisperXTranscriberService] Using local venv Python:', venvPython)
-      return venvPython
-    }
-
-    // Fallback to system Python
-    const systemPython = process.platform === 'win32' ? 'python' : 'python3'
-    console.log('[WhisperXTranscriberService] Using system Python:', systemPython)
-    return systemPython
+    console.error('[WhisperXTranscriberService] Python not found at:', pythonPath)
+    return null
   }
 
   private getExecutablePath(): string | null {
