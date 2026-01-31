@@ -78,19 +78,30 @@ echo "=== Upgrading pip ==="
 $PYTHON_BIN -m pip install --upgrade pip
 
 # 4. Install PyTorch CPU-only for Linux (reduces ~4GB CUDA libraries)
+# Must use exact version 2.8.0 to match WhisperX's torch~=2.8.0 requirement
 if [[ "$PLATFORM" == linux-* ]]; then
   echo "=== Installing PyTorch (CPU-only for Linux) ==="
   $PYTHON_BIN -m pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu \
-    'torch>=2.8.0' \
-    'torchaudio>=2.8.0'
+    'torch==2.8.0' \
+    'torchaudio==2.8.0'
 fi
 
 # 5. Install WhisperX from GitHub (not on PyPI)
-# On Linux, this will use the already-installed CPU PyTorch
+# On Linux, use --no-deps to avoid reinstalling torch, then install remaining deps
 echo "=== Installing WhisperX ==="
-$PYTHON_BIN -m pip install --no-cache-dir \
-  'git+https://github.com/m-bain/whisperX.git'
+if [[ "$PLATFORM" == linux-* ]]; then
+  # Install WhisperX without dependencies first
+  $PYTHON_BIN -m pip install --no-cache-dir --no-deps \
+    'git+https://github.com/m-bain/whisperX.git'
+  # Then install all other dependencies (pip will skip already-installed torch)
+  $PYTHON_BIN -m pip install --no-cache-dir \
+    'ctranslate2>=4.5.0' 'faster-whisper>=1.1.1' 'nltk>=3.9.1' \
+    'numpy>=2.1.0' 'pandas>=2.2.3' 'huggingface-hub<1.0.0' 'transformers>=4.48.0'
+else
+  $PYTHON_BIN -m pip install --no-cache-dir \
+    'git+https://github.com/m-bain/whisperX.git'
+fi
 
 # 6. Install pyannote.audio for diarization (must be <4.0)
 echo "=== Installing pyannote.audio ==="
