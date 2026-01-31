@@ -223,6 +223,84 @@ def get_device():
     return device, device_name, compute_type
 
 
+def get_diarization_models_dir():
+    """
+    Find diarization models directory, checking multiple locations.
+
+    Checks in order:
+    1. User data directory (~/.xscribe/models/diarization/) - for lite/packaged builds
+    2. Relative to script (../models/diarization) - for development
+    3. Returns user data dir as default (will be created during download)
+    """
+    # 1. User data directory (works for all build types)
+    if sys.platform == 'win32':
+        user_data = os.environ.get('APPDATA', os.path.expanduser('~'))
+        user_models = os.path.join(user_data, 'xscribe', 'models', 'diarization')
+    elif sys.platform == 'darwin':
+        user_models = os.path.expanduser('~/Library/Application Support/xscribe/models/diarization')
+    else:
+        user_models = os.path.expanduser('~/.config/xscribe/models/diarization')
+
+    # Check if models exist in user directory
+    segmentation_file = os.path.join(user_models, 'segmentation.onnx')
+    if os.path.exists(user_models) and os.path.exists(segmentation_file):
+        log(f"Found diarization models in user directory: {user_models}")
+        return user_models
+
+    # 2. Relative to script (development mode)
+    dev_models = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'models', 'diarization')
+    dev_models = os.path.normpath(dev_models)
+    segmentation_file = os.path.join(dev_models, 'segmentation.onnx')
+    if os.path.exists(dev_models) and os.path.exists(segmentation_file):
+        log(f"Found diarization models in development directory: {dev_models}")
+        return dev_models
+
+    # 3. Return user_models anyway (will be created during download)
+    log(f"Diarization models not found, will use: {user_models}")
+    return user_models
+
+
+def download_diarization_models(models_dir, msg_id=None):
+    """
+    Download sherpa-onnx diarization models from HuggingFace.
+
+    Downloads:
+    - segmentation.onnx (~5MB) - pyannote segmentation model
+    - 3dspeaker_speech_eres2net...onnx (~45MB) - speaker embedding model
+    """
+    import urllib.request
+
+    os.makedirs(models_dir, exist_ok=True)
+
+    models = {
+        'segmentation.onnx': {
+            'url': 'https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx',
+            'size': '~5MB'
+        },
+        '3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx': {
+            'url': 'https://huggingface.co/csukuangfj/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k/resolve/main/model.onnx',
+            'size': '~45MB'
+        },
+    }
+
+    total_models = len(models)
+    for idx, (filename, info) in enumerate(models.items(), 1):
+        dest = os.path.join(models_dir, filename)
+        if not os.path.exists(dest):
+            log(f"Downloading {filename} ({info['size']})...")
+            if msg_id:
+                send_progress(msg_id, 56, "diarizing",
+                             f"Downloading diarization model {idx}/{total_models} ({info['size']})...")
+            try:
+                urllib.request.urlretrieve(info['url'], dest)
+                log(f"Downloaded {filename} successfully")
+            except Exception as e:
+                log(f"Failed to download {filename}: {e}")
+                raise RuntimeError(f"Failed to download diarization model {filename}: {e}")
+        else:
+            log(f"Model {filename} already exists")
+
+
 def format_text_with_paragraphs(text, words, pause_threshold=0.7, sentences_per_paragraph=3):
     """
     Format segment text with paragraph breaks based on natural pauses.
@@ -359,11 +437,13 @@ class WhisperXTranscriber:
             send_progress(msg_id, 10, "downloading", "Loading diarization model...")
             log("Loading sherpa-onnx diarization model (no HF token required)...")
 
-            # Models are stored relative to this script
-            models_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "..", "models", "diarization"
-            )
+            # Find or download diarization models
+            models_dir = get_diarization_models_dir()
+            segmentation_file = os.path.join(models_dir, 'segmentation.onnx')
+
+            if not os.path.exists(segmentation_file):
+                log(f"Diarization models not found at {models_dir}, downloading...")
+                download_diarization_models(models_dir, msg_id)
 
             self.diarize_model = SherpaDiarizer(models_dir)
 
@@ -487,10 +567,15 @@ class WhisperXTranscriber:
                 if not self.diarize_model:
                     log("Loading sherpa-onnx diarization model...")
                     from sherpa_diarizer import SherpaDiarizer
-                    models_dir = os.path.join(
-                        os.path.dirname(os.path.abspath(__file__)),
-                        "..", "models", "diarization"
-                    )
+
+                    # Find or download diarization models
+                    models_dir = get_diarization_models_dir()
+                    segmentation_file = os.path.join(models_dir, 'segmentation.onnx')
+
+                    if not os.path.exists(segmentation_file):
+                        log(f"Diarization models not found at {models_dir}, downloading...")
+                        download_diarization_models(models_dir, msg_id)
+
                     self.diarize_model = SherpaDiarizer(models_dir)
 
                 send_progress(msg_id, 58, "diarizing", "Identifying speakers...")
