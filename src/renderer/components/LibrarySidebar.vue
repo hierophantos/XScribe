@@ -79,6 +79,52 @@ async function cancelTranscription(transcriptionId: string) {
   }
 }
 
+// Context menu state
+interface Transcription {
+  id: string
+  fileName: string
+  status: string
+  duration: number | null
+  createdAt: string
+  completedAt: string | null
+}
+
+const contextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  transcriptionId: null as string | null
+})
+
+function showContextMenu(event: MouseEvent, transcription: Transcription) {
+  event.preventDefault()
+  // Don't show context menu for processing items
+  if (transcription.status === 'processing' || transcription.status === 'pending') {
+    return
+  }
+  contextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    transcriptionId: transcription.id
+  }
+}
+
+function hideContextMenu() {
+  contextMenu.value.visible = false
+  contextMenu.value.transcriptionId = null
+}
+
+async function deleteTranscription() {
+  if (!contextMenu.value.transcriptionId) return
+  try {
+    await libraryStore.deleteTranscription(contextMenu.value.transcriptionId)
+  } catch (err) {
+    console.error('Failed to delete transcription:', err)
+  }
+  hideContextMenu()
+}
+
 defineEmits<{
   (e: 'select-transcription', id: string): void
   (e: 'new-transcription'): void
@@ -203,6 +249,7 @@ defineEmits<{
           :key="transcription.id"
           class="transcription-item"
           @click="$emit('select-transcription', transcription.id)"
+          @contextmenu="showContextMenu($event, transcription)"
         >
           <div class="transcription-info">
             <span class="transcription-name">{{ transcription.fileName }}</span>
@@ -263,6 +310,25 @@ defineEmits<{
         </svg>
       </button>
     </div>
+
+    <!-- Context Menu -->
+    <Teleport to="body">
+      <div
+        v-if="contextMenu.visible"
+        class="context-menu"
+        :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
+        @click.stop
+      >
+        <button class="context-menu-item danger" @click="deleteTranscription">
+          ❌ Remove Transcript
+        </button>
+      </div>
+      <div
+        v-if="contextMenu.visible"
+        class="context-menu-overlay"
+        @click="hideContextMenu"
+      />
+    </Teleport>
   </aside>
 </template>
 
@@ -627,5 +693,50 @@ defineEmits<{
 
 .status-icon.cancelled {
   color: var(--text-muted);
+}
+
+/* Context Menu */
+.context-menu {
+  position: fixed;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 10001;
+  min-width: 160px;
+  padding: 4px;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.context-menu-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.context-menu-item.danger {
+  color: var(--error-color, #ef4444);
+}
+
+.context-menu-item.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.context-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
 }
 </style>
