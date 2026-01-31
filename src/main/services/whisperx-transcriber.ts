@@ -233,12 +233,14 @@ export class WhisperXTranscriberService extends EventEmitter {
       buffer = lines.pop() || ''
 
       for (const line of lines) {
-        if (line.trim()) {
+        // Trim to handle Windows \r\n line endings (Python outputs \r\n on Windows)
+        const trimmedLine = line.trim()
+        if (trimmedLine) {
           try {
-            const msg = JSON.parse(line) as PythonMessage
+            const msg = JSON.parse(trimmedLine) as PythonMessage
             this.handleMessage(msg)
           } catch (e) {
-            console.error('[WhisperXTranscriberService] Failed to parse message:', line, e)
+            console.error('[WhisperXTranscriberService] Failed to parse message:', trimmedLine, e)
           }
         }
       }
