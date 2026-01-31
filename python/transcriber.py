@@ -39,6 +39,15 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
+# =============================================================================
+# PyTorch 2.6+ changed torch.load default to weights_only=True for security.
+# This breaks pyannote model loading which uses omegaconf and other classes.
+# Setting this env var restores the old behavior (weights_only=False).
+# This is safe because we only load models from trusted sources (HuggingFace).
+# See: https://github.com/m-bain/whisperX/issues/1304
+# =============================================================================
+os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+
 # Now safe to import other modules
 import contextlib
 import json
@@ -46,35 +55,12 @@ import torch
 
 
 # =============================================================================
-# Define log() early so it can be used in the omegaconf block below
+# Define log() early so it can be used throughout the script
 # =============================================================================
 def log(message):
     """Log message to stderr (won't interfere with JSON IPC)"""
     sys.stderr.write(f"[transcriber.py] {message}\n")
     sys.stderr.flush()
-
-
-# =============================================================================
-# PyTorch 2.6+ changed torch.load default to weights_only=True for security.
-# pyannote.audio models use omegaconf which requires these safe globals.
-# This must be done BEFORE any model loading occurs.
-# =============================================================================
-try:
-    from omegaconf import DictConfig, ListConfig, OmegaConf
-    from omegaconf.base import ContainerMetadata, Metadata
-    from omegaconf.nodes import ValueNode
-    if hasattr(torch.serialization, 'add_safe_globals'):
-        torch.serialization.add_safe_globals([
-            DictConfig,
-            ListConfig,
-            OmegaConf,
-            ContainerMetadata,
-            Metadata,
-            ValueNode,
-        ])
-        log("Added omegaconf classes to PyTorch safe globals")
-except ImportError:
-    pass  # omegaconf not installed, skip
 
 
 def get_device():
