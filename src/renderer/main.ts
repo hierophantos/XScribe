@@ -67,3 +67,8 @@ window.electronAPI.onTranscriptionCancelled((data) => {
     status: 'cancelled'
   })
 })
+
+// Listen for partial transcription results (streaming)
+window.electronAPI.onTranscriptionPartial((data) => {
+  transcriptionStore.onTranscriptionPartial(data)
+})

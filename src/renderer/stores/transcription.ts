@@ -173,6 +173,28 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     }
   }
 
+  // Handle partial transcription results (streaming)
+  function onTranscriptionPartial(data: {
+    id: string
+    segments: Array<{ start: number; end: number; text: string }>
+    text: string
+    duration: number
+  }) {
+    if (data.id === activeTranscriptionId.value) {
+      // Update segments with partial results for live display
+      segments.value = data.segments.map((seg, index) => ({
+        id: index,
+        transcriptionId: data.id,
+        speakerId: null,
+        startTime: seg.start,
+        endTime: seg.end,
+        text: seg.text,
+        confidence: null
+      }))
+      status.value = 'processing'
+    }
+  }
+
   // Extensions that require ffmpeg for conversion
   const NEEDS_FFMPEG = ['.mp3', '.m4a', '.flac', '.ogg', '.webm', '.mp4', '.mkv', '.avi', '.mov']
 
@@ -295,6 +317,7 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     onTranscriptionProgress,
     onTranscriptionCompleted,
     onTranscriptionFailed,
-    onTranscriptionCancelled
+    onTranscriptionCancelled,
+    onTranscriptionPartial
   }
 })

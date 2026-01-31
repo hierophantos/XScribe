@@ -169,11 +169,32 @@ ipcMain.handle(
         })
       }
 
+      // Send partial results for streaming display
+      const partialResultHandler = (data: {
+        segments: Array<{ start: number; end: number; text: string }>
+        text: string
+        duration: number
+      }) => {
+        event.sender.send('transcribe:partial', {
+          id: transcriptionRecord.id,
+          segments: data.segments,
+          text: data.text,
+          duration: data.duration
+        })
+      }
+      transcriber.on('partialResult', partialResultHandler)
+
       // Transcribe the audio
-      const transcription = await transcriber.transcribe(filePath, {
-        language: options?.language,
-        onProgress: sendProgress
-      })
+      let transcription
+      try {
+        transcription = await transcriber.transcribe(filePath, {
+          language: options?.language,
+          onProgress: sendProgress
+        })
+      } finally {
+        // Remove the partial result listener
+        transcriber.off('partialResult', partialResultHandler)
+      }
 
       let finalSegments = transcription.segments
 

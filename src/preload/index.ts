@@ -240,6 +240,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('transcribe:cancelled', (_event, data) => callback(data))
   },
 
+  onTranscriptionPartial: (
+    callback: (data: {
+      id: string
+      segments: Array<{ start: number; end: number; text: string }>
+      text: string
+      duration: number
+    }) => void
+  ) => {
+    ipcRenderer.on('transcribe:partial', (_event, data) => callback(data))
+  },
+
   // Diarization
   diarize: (filePath: string): Promise<DiarizationResult> =>
     ipcRenderer.invoke('diarize:start', filePath),
@@ -360,6 +371,14 @@ declare global {
       ) => void
       onTranscriptionFailed: (callback: (data: { id: string; status: string; error: string }) => void) => void
       onTranscriptionCancelled: (callback: (data: { id: string }) => void) => void
+      onTranscriptionPartial: (
+        callback: (data: {
+          id: string
+          segments: Array<{ start: number; end: number; text: string }>
+          text: string
+          duration: number
+        }) => void
+      ) => void
       diarize: (filePath: string) => Promise<DiarizationResult>
       onDiarizationProgress: (callback: (progress: DiarizationProgress) => void) => void
       models: {
