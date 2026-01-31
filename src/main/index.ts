@@ -838,6 +838,25 @@ ipcMain.handle('setup:getPythonPath', () => {
   return setupService.getPythonPath()
 })
 
+// ============ Update IPC Handlers ============
+
+import { getUpdateService, UpdateInfo } from './services/update-service'
+
+ipcMain.handle('update:check', async (_event, forceCheck: boolean = false): Promise<UpdateInfo> => {
+  const updateService = getUpdateService()
+  return await updateService.checkForUpdates(forceCheck)
+})
+
+ipcMain.handle('update:openReleasePage', async (_event, url: string) => {
+  const updateService = getUpdateService()
+  await updateService.openReleasePage(url)
+})
+
+ipcMain.handle('update:openDownload', async (_event, updateInfo: UpdateInfo) => {
+  const updateService = getUpdateService()
+  await updateService.openDownloadPage(updateInfo)
+})
+
 // ============ App Lifecycle ============
 
 app.whenReady().then(() => {

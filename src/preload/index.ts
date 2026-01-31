@@ -182,6 +182,23 @@ interface TranscriptionProgress {
 
 type ExportFormat = 'srt' | 'vtt' | 'txt' | 'json' | 'docx'
 
+// Update info from GitHub releases
+interface UpdateInfo {
+  currentVersion: string
+  latestVersion: string
+  hasUpdate: boolean
+  releaseUrl: string
+  releaseNotes: string
+  publishedAt: string
+  downloadUrls: {
+    mac?: string
+    macArm?: string
+    win?: string
+    linux?: string
+    linuxDeb?: string
+  }
+}
+
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -380,6 +397,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     callback: (progress: { stage: string; percent: number; message: string; error?: string }) => void
   ) => {
     ipcRenderer.on('setup:progress', (_event, progress) => callback(progress))
+  },
+
+  // Updates
+  update: {
+    check: (forceCheck: boolean = false): Promise<UpdateInfo> =>
+      ipcRenderer.invoke('update:check', forceCheck),
+    openReleasePage: (url: string): Promise<void> =>
+      ipcRenderer.invoke('update:openReleasePage', url),
+    openDownload: (updateInfo: UpdateInfo): Promise<void> =>
+      ipcRenderer.invoke('update:openDownload', updateInfo)
   }
 })
 
@@ -507,6 +534,11 @@ declare global {
       onSetupProgress: (
         callback: (progress: { stage: string; percent: number; message: string; error?: string }) => void
       ) => void
+      update: {
+        check: (forceCheck?: boolean) => Promise<UpdateInfo>
+        openReleasePage: (url: string) => Promise<void>
+        openDownload: (updateInfo: UpdateInfo) => Promise<void>
+      }
     }
   }
 }

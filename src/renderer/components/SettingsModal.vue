@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useUIStore } from '../stores/ui'
 
 const uiStore = useUIStore()
@@ -9,8 +9,27 @@ const defaultModel = ref<string>('base.en')
 const availableModels = ref<{ name: string; description: string; size: string; downloaded: boolean }[]>([])
 const isLoadingModels = ref(true)
 
+// Version and update info
+const currentVersion = ref<string>('')
+const isCheckingUpdate = ref(false)
+const updateInfo = ref<{
+  currentVersion: string
+  latestVersion: string
+  hasUpdate: boolean
+  releaseUrl: string
+  releaseNotes: string
+  publishedAt: string
+} | null>(null)
+const updateError = ref<string | null>(null)
+
 // Model options that make sense as defaults (excluding large models that take too long to download)
 const RECOMMENDED_DEFAULTS = ['tiny', 'tiny.en', 'base', 'base.en', 'small', 'small.en', 'medium', 'medium.en', 'large-v3']
+
+const formattedPublishDate = computed(() => {
+  if (!updateInfo.value?.publishedAt) return ''
+  const date = new Date(updateInfo.value.publishedAt)
+  return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+})
 
 async function loadSettings() {
   try {
@@ -37,6 +56,9 @@ async function loadSettings() {
         { name: 'large-v3', description: 'Most accurate', size: '~2.9GB', downloaded: false }
       ]
     }
+
+    // Load current version
+    currentVersion.value = await window.electronAPI.getVersion()
   } catch (err) {
     console.error('Failed to load settings:', err)
   } finally {
@@ -48,6 +70,33 @@ async function handleDefaultModelChange(event: Event) {
   const value = (event.target as HTMLSelectElement).value
   defaultModel.value = value
   await window.electronAPI.db.settings.set('defaultModel', value)
+}
+
+async function checkForUpdates() {
+  isCheckingUpdate.value = true
+  updateError.value = null
+
+  try {
+    const info = await window.electronAPI.update.check(true) // Force check
+    updateInfo.value = info
+  } catch (err) {
+    console.error('Failed to check for updates:', err)
+    updateError.value = 'Failed to check for updates. Please try again later.'
+  } finally {
+    isCheckingUpdate.value = false
+  }
+}
+
+async function openDownloadPage() {
+  if (updateInfo.value) {
+    await window.electronAPI.update.openDownload(updateInfo.value)
+  }
+}
+
+async function openReleasePage() {
+  if (updateInfo.value) {
+    await window.electronAPI.update.openReleasePage(updateInfo.value.releaseUrl)
+  }
 }
 
 function close() {
@@ -147,6 +196,92 @@ onMounted(() => {
           <p class="setting-description">
             Theme customization coming soon
           </p>
+        </div>
+
+        <!-- Version and Updates -->
+        <div class="setting-group">
+          <label class="setting-label">About XScribe</label>
+          <div class="version-info">
+            <div class="version-row">
+              <span class="version-label">Current Version:</span>
+              <span class="version-value">v{{ currentVersion || '...' }}</span>
+            </div>
+
+            <div v-if="updateInfo" class="update-status">
+              <div v-if="updateInfo.hasUpdate" class="update-available">
+                <div class="update-badge">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M12 8v4M12 16h.01" />
+                  </svg>
+                  <span>Update Available: v{{ updateInfo.latestVersion }}</span>
+                </div>
+                <p class="update-date">Released {{ formattedPublishDate }}</p>
+                <div class="update-actions">
+                  <button class="btn-update" @click="openDownloadPage">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    Download Update
+                  </button>
+                  <button class="btn-secondary-small" @click="openReleasePage">
+                    View Release Notes
+                  </button>
+                </div>
+              </div>
+              <div v-else class="up-to-date">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 11.08V12a10 10 0 11-5.93-9.14" />
+                  <polyline points="22 4 12 14.01 9 11.01" />
+                </svg>
+                <span>You're up to date!</span>
+              </div>
+            </div>
+
+            <div v-if="updateError" class="update-error">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="15" y1="9" x2="9" y2="15" />
+                <line x1="9" y1="9" x2="15" y2="15" />
+              </svg>
+              <span>{{ updateError }}</span>
+            </div>
+
+            <button
+              class="btn-check-update"
+              @click="checkForUpdates"
+              :disabled="isCheckingUpdate"
+            >
+              <svg
+                v-if="isCheckingUpdate"
+                class="spinner"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="10" opacity="0.25" />
+                <path d="M12 2a10 10 0 0110 10" />
+              </svg>
+              <svg
+                v-else
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <polyline points="23 4 23 10 17 10" />
+                <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" />
+              </svg>
+              {{ isCheckingUpdate ? 'Checking...' : 'Check for Updates' }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -354,5 +489,151 @@ onMounted(() => {
 
 .btn-primary:hover {
   background: var(--accent-hover);
+}
+
+/* Version and Update styles */
+.version-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.version-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.version-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.version-value {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.update-status {
+  padding: 0.75rem;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+}
+
+.update-available {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.update-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--accent-color);
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.update-date {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.update-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.btn-update {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--accent-color);
+  border: none;
+  border-radius: 6px;
+  color: white;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn-update:hover {
+  background: var(--accent-hover);
+}
+
+.btn-secondary-small {
+  padding: 0.5rem 0.75rem;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.btn-secondary-small:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.up-to-date {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #22c55e;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.update-error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: 6px;
+  color: #ef4444;
+  font-size: 0.8125rem;
+}
+
+.btn-check-update {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.625rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  cursor: pointer;
+  margin-top: 0.25rem;
+}
+
+.btn-check-update:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.btn-check-update:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 </style>
