@@ -7,13 +7,14 @@
 # - Removed unused indirect dependencies
 
 # CPU-only PyTorch (must be specified first)
---index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0,<2.6.0
 torchaudio>=2.0.0,<2.6.0
 
 # WhisperX - transcription with word-level timestamps
+# Must be installed from GitHub (not on PyPI)
 # Note: WhisperX requires pyannote.audio 3.x (not 4.x) for compatibility
-whisperx>=3.1.0
+git+https://github.com/m-bain/whisperX.git
 pyannote.audio>=3.1,<4.0
 
 # Sherpa-ONNX for token-free speaker diarization
