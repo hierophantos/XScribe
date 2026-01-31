@@ -272,13 +272,16 @@ def download_diarization_models(models_dir, msg_id=None):
 
     os.makedirs(models_dir, exist_ok=True)
 
+    # Model URLs - segmentation from HuggingFace (works without auth),
+    # embedding from GitHub releases (public, no auth required)
     models = {
         'segmentation.onnx': {
             'url': 'https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx',
             'size': '~5MB'
         },
-        '3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx': {
-            'url': 'https://huggingface.co/csukuangfj/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k/resolve/main/model.onnx',
+        # Note: filename must match what sherpa_diarizer.py expects
+        '3dspeaker_speech_eres2net_base_200k_sv_zh-cn_16k-common.onnx': {
+            'url': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_200k_sv_zh-cn_16k-common.onnx',
             'size': '~45MB'
         },
     }
