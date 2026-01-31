@@ -51,6 +51,9 @@ os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 # Now safe to import other modules
 import contextlib
 import json
+import math
+import threading
+import time
 import torch
 
 
@@ -61,6 +64,91 @@ def log(message):
     """Log message to stderr (won't interfere with JSON IPC)"""
     sys.stderr.write(f"[transcriber.py] {message}\n")
     sys.stderr.flush()
+
+
+def send(msg):
+    """Send JSON message to stdout"""
+    print(json.dumps(msg), flush=True)
+
+
+def send_progress(msg_id, percent, stage, message=None):
+    """Send progress update"""
+    send({
+        "type": "progress",
+        "id": msg_id,
+        "percent": percent,
+        "stage": stage,
+        "message": message or stage
+    })
+
+
+class ProgressHeartbeat:
+    """
+    Context manager that sends periodic progress updates during blocking operations.
+
+    This addresses the UX issue where long operations (transcribe, align) appear to
+    hang because WhisperX doesn't expose progress callbacks. Sends updates every
+    few seconds so users know the app is still working.
+
+    Usage:
+        with ProgressHeartbeat(msg_id, 10, 38, "transcribing", "Running..."):
+            result = model.transcribe(audio)  # Blocking operation
+    """
+
+    def __init__(self, msg_id, start_percent, end_percent, stage, message,
+                 interval=3.0, expected_duration=60.0):
+        """
+        Args:
+            msg_id: Message ID for IPC
+            start_percent: Starting progress percentage
+            end_percent: Maximum progress percentage (won't exceed this)
+            stage: Stage name (e.g., "transcribing", "aligning")
+            message: Message to display to user
+            interval: Seconds between heartbeat updates
+            expected_duration: Estimated operation duration for progress calculation
+        """
+        self.msg_id = msg_id
+        self.start_percent = start_percent
+        self.end_percent = end_percent
+        self.stage = stage
+        self.message = message
+        self.interval = interval
+        self.expected_duration = expected_duration
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._start_time = None
+
+    def _heartbeat_loop(self):
+        """Background thread that sends periodic progress updates."""
+        while not self._stop_event.is_set():
+            elapsed = time.time() - self._start_time
+            progress_range = self.end_percent - self.start_percent
+
+            # Asymptotic progress: approaches but never reaches end_percent
+            # At expected_duration, we're at ~63% of the range
+            # At 2x expected_duration, we're at ~86% of the range
+            progress_fraction = 1 - math.exp(-elapsed / self.expected_duration)
+            current_percent = self.start_percent + (progress_range * 0.95 * progress_fraction)
+
+            send_progress(self.msg_id, current_percent, self.stage,
+                         f"{self.message} ({int(elapsed)}s)")
+
+            self._stop_event.wait(self.interval)
+
+    def __enter__(self):
+        """Start the heartbeat thread."""
+        self._start_time = time.time()
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Stop the heartbeat thread."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+        return False  # Don't suppress exceptions
 
 
 def get_device():
@@ -81,22 +169,6 @@ def get_device():
         compute_type = "int8"  # Best for CPU
 
     return device, device_name, compute_type
-
-
-def send(msg):
-    """Send JSON message to stdout"""
-    print(json.dumps(msg), flush=True)
-
-
-def send_progress(msg_id, percent, stage, message=None):
-    """Send progress update"""
-    send({
-        "type": "progress",
-        "id": msg_id,
-        "percent": percent,
-        "stage": stage,
-        "message": message or stage
-    })
 
 
 def format_text_with_paragraphs(text, words, pause_threshold=0.7, sentences_per_paragraph=3):
@@ -290,38 +362,51 @@ class WhisperXTranscriber:
             # Load audio
             audio = whisperx.load_audio(audio_path)
 
-            send_progress(msg_id, 10, "transcribing", "Running speech recognition...")
-
             # Transcribe with whisper
-            result = self.model.transcribe(
-                audio,
-                batch_size=16 if self.device == "cuda" else 4,
-                language=language if language != "auto" else None
-            )
+            # Use heartbeat for progress since WhisperX doesn't expose callbacks
+            # Expected duration varies: ~30s for short clips, 2-5 min for long files on CPU
+            expected_transcribe_time = 60.0 if self.device == "cpu" else 20.0
+
+            with ProgressHeartbeat(
+                msg_id, 10, 38, "transcribing",
+                "Running speech recognition...",
+                expected_duration=expected_transcribe_time
+            ):
+                result = self.model.transcribe(
+                    audio,
+                    batch_size=16 if self.device == "cuda" else 4,
+                    language=language if language != "auto" else None
+                )
 
             detected_language = result.get("language", language)
             log(f"Detected language: {detected_language}")
 
-            send_progress(msg_id, 40, "aligning", "Aligning words for precise timestamps...")
+            # Load alignment model and align for word-level timestamps
+            # Use heartbeat since alignment can take 30-120s on CPU
+            expected_align_time = 90.0 if self.device == "cpu" else 30.0
 
-            # Load alignment model for the detected language
             try:
-                # Redirect stdout to stderr to avoid corrupting JSON IPC
-                with contextlib.redirect_stdout(sys.stderr):
-                    align_model, align_metadata = whisperx.load_align_model(
-                        language_code=detected_language,
-                        device=self.device
-                    )
+                with ProgressHeartbeat(
+                    msg_id, 40, 54, "aligning",
+                    "Aligning words for precise timestamps...",
+                    expected_duration=expected_align_time
+                ):
+                    # Redirect stdout to stderr to avoid corrupting JSON IPC
+                    with contextlib.redirect_stdout(sys.stderr):
+                        align_model, align_metadata = whisperx.load_align_model(
+                            language_code=detected_language,
+                            device=self.device
+                        )
 
-                    # Align whisper output for word-level timestamps
-                    result = whisperx.align(
-                        result["segments"],
-                        align_model,
-                        align_metadata,
-                        audio,
-                        self.device,
-                        return_char_alignments=False
-                    )
+                        # Align whisper output for word-level timestamps
+                        result = whisperx.align(
+                            result["segments"],
+                            align_model,
+                            align_metadata,
+                            audio,
+                            self.device,
+                            return_char_alignments=False
+                        )
             except Exception as align_error:
                 log(f"Alignment failed (language {detected_language} may not be supported): {align_error}")
                 # Continue without word-level alignment
