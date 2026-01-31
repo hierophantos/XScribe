@@ -111,8 +111,11 @@ let currentModel = null;
 let diarizer = null;
 
 // Send a message to the parent process
+// Use process.stdout.write instead of console.log to avoid any buffering issues
+// and ensure clean JSON lines that won't be corrupted by sherpa-onnx output
 function send(msg) {
-  console.log(JSON.stringify(msg));
+  const json = JSON.stringify(msg);
+  process.stdout.write(json + '\n');
 }
 
 // Handle incoming messages
@@ -304,6 +307,15 @@ function transcribe(msg) {
         });
 
         fullText += (fullText ? ' ' : '') + result.text.trim();
+
+        // Send partial result for streaming display
+        send({
+          type: 'partialResult',
+          segments: segments.slice(), // Copy current segments
+          text: fullText,
+          duration: totalDuration,
+          id
+        });
       }
 
       // Move to next chunk

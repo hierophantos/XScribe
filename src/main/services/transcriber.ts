@@ -116,8 +116,12 @@ export class TranscriberService extends EventEmitter {
   private currentModel: ModelName | null = null
   private worker: ChildProcess | null = null
   private isReady = false
-  private pendingRequests = new Map<string, { resolve: Function; reject: Function }>()
+  private pendingRequests = new Map<
+    string,
+    { resolve: Function; reject: Function; resetTimeout?: () => void }
+  >()
   private requestId = 0
+  private stdoutBuffer = '' // Buffer for partial stdout data
 
   constructor() {
     super()
@@ -198,11 +202,24 @@ export class TranscriberService extends EventEmitter {
       })
 
       // Handle stdout (JSON messages)
+      // Buffer partial data and only process complete lines
       this.worker.stdout?.on('data', (data: Buffer) => {
-        const lines = data.toString().split('\n').filter((l) => l.trim())
+        this.stdoutBuffer += data.toString()
+        const lines = this.stdoutBuffer.split('\n')
+        // Keep incomplete last line in buffer
+        this.stdoutBuffer = lines.pop() || ''
+
         for (const line of lines) {
+          const trimmed = line.trim()
+          // Skip empty lines or non-JSON lines (sherpa-onnx debug output)
+          if (!trimmed || !trimmed.startsWith('{')) {
+            if (trimmed) {
+              console.log('[TranscriberService] Worker output (non-JSON):', trimmed)
+            }
+            continue
+          }
           try {
-            const msg = JSON.parse(line) as WorkerMessage
+            const msg = JSON.parse(trimmed) as WorkerMessage
             this.handleWorkerMessage(msg)
 
             // Resolve startup promise on ready
@@ -211,7 +228,7 @@ export class TranscriberService extends EventEmitter {
               resolve()
             }
           } catch (err) {
-            console.error('[TranscriberService] Failed to parse worker message:', line)
+            console.error('[TranscriberService] Failed to parse worker message:', trimmed.substring(0, 100) + '...')
           }
         }
       })
@@ -260,18 +277,26 @@ export class TranscriberService extends EventEmitter {
       }
 
       const id = String(++this.requestId)
-      this.pendingRequests.set(id, { resolve, reject })
+      let timeoutId: NodeJS.Timeout
+
+      // Renewable timeout - resets when progress is received
+      const resetTimeout = () => {
+        clearTimeout(timeoutId)
+        timeoutId = setTimeout(() => {
+          if (this.pendingRequests.has(id)) {
+            this.pendingRequests.delete(id)
+            reject(new Error('Request timeout - no progress for 60 seconds'))
+          }
+        }, 60000) // 1 minute between progress updates
+      }
+
+      this.pendingRequests.set(id, { resolve, reject, resetTimeout })
 
       const fullMsg = { ...msg, id }
       this.worker.stdin.write(JSON.stringify(fullMsg) + '\n')
 
-      // Timeout for request
-      setTimeout(() => {
-        if (this.pendingRequests.has(id)) {
-          this.pendingRequests.delete(id)
-          reject(new Error('Request timeout'))
-        }
-      }, 300000) // 5 minute timeout for long transcriptions
+      // Start the initial timeout
+      resetTimeout()
     })
   }
 
@@ -284,9 +309,23 @@ export class TranscriberService extends EventEmitter {
     // Emit general worker message event for external listeners (diarizer)
     this.emit('workerMessage', msg)
 
-    // Handle progress updates (no response needed)
+    // Handle progress updates - reset timeout to keep request alive
     if (type === 'progress') {
+      if (id) {
+        const pending = this.pendingRequests.get(id)
+        pending?.resetTimeout?.() // Reset timeout on progress
+      }
       this.emit('progress', msg)
+      return
+    }
+
+    // Handle partial results (streaming transcription)
+    if (type === 'partialResult') {
+      if (id) {
+        const pending = this.pendingRequests.get(id)
+        pending?.resetTimeout?.() // Reset timeout on partial result
+      }
+      this.emit('partialResult', msg)
       return
     }
 
