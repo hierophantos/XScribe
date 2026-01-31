@@ -406,10 +406,24 @@ class WhisperXTranscriber:
                 }
 
             log(f"Starting transcription: {audio_path}")
+            log(f"File exists check: {os.path.exists(audio_path)}, is_file: {os.path.isfile(audio_path)}")
+
+            # Check for UNC paths on Windows which may cause issues
+            if sys.platform == 'win32' and audio_path.startswith('\\\\'):
+                log(f"WARNING: UNC network path detected. This may cause issues with ffmpeg.")
+
             send_progress(msg_id, 5, "transcribing", "Loading audio file...")
 
-            # Load audio
-            audio = whisperx.load_audio(audio_path)
+            # Load audio with better error handling
+            try:
+                audio = whisperx.load_audio(audio_path)
+            except Exception as audio_err:
+                log(f"Failed to load audio file: {audio_err}")
+                return {
+                    "type": "error",
+                    "id": msg_id,
+                    "error": f"Failed to load audio file: {audio_err}. If using a network path, try copying the file to a local folder first."
+                }
 
             # Transcribe with whisper
             # Use heartbeat for progress since WhisperX doesn't expose callbacks
