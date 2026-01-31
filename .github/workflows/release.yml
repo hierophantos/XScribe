@@ -57,8 +57,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: List release artifacts
+      - name: List release artifacts (Unix)
+        if: runner.os != 'Windows'
         run: ls -la release/ || echo "No release directory"
+
+      - name: List release artifacts (Windows)
+        if: runner.os == 'Windows'
+        run: dir release 2>nul || echo "No release directory"
+        shell: cmd
 
       - name: Upload macOS Release Assets
         if: matrix.os == 'macos-latest'
