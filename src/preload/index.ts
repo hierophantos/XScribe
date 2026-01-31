@@ -407,6 +407,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('update:openReleasePage', url),
     openDownload: (updateInfo: UpdateInfo): Promise<void> =>
       ipcRenderer.invoke('update:openDownload', updateInfo)
+  },
+
+  // Debug Logger
+  logger: {
+    getPath: (): Promise<string> => ipcRenderer.invoke('logger:getPath'),
+    getContents: (): Promise<string> => ipcRenderer.invoke('logger:getContents'),
+    getTail: (lines: number = 100): Promise<string> => ipcRenderer.invoke('logger:getTail', lines),
+    clear: (): Promise<void> => ipcRenderer.invoke('logger:clear'),
+    openInExplorer: (): Promise<void> => ipcRenderer.invoke('logger:openInExplorer')
   }
 })
 
@@ -538,6 +547,13 @@ declare global {
         check: (forceCheck?: boolean) => Promise<UpdateInfo>
         openReleasePage: (url: string) => Promise<void>
         openDownload: (updateInfo: UpdateInfo) => Promise<void>
+      }
+      logger: {
+        getPath: () => Promise<string>
+        getContents: () => Promise<string>
+        getTail: (lines?: number) => Promise<string>
+        clear: () => Promise<void>
+        openInExplorer: () => Promise<void>
       }
     }
   }

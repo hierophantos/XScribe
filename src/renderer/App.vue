@@ -10,6 +10,7 @@ import ProgressBar from './components/ProgressBar.vue'
 import ToastContainer from './components/ToastContainer.vue'
 import ExportModal from './components/ExportModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
+import DebugLogModal from './components/DebugLogModal.vue'
 import AddProjectModal from './components/AddProjectModal.vue'
 import EditProjectModal from './components/EditProjectModal.vue'
 import TranscriptionDetailsModal from './components/TranscriptionDetailsModal.vue'
@@ -293,6 +294,7 @@ onMounted(async () => {
     <!-- Modals -->
     <ExportModal v-if="uiStore.activeModal === 'export'" />
     <SettingsModal v-if="uiStore.activeModal === 'settings'" />
+    <DebugLogModal v-if="uiStore.activeModal === 'debugLog'" />
     <AddProjectModal v-if="uiStore.activeModal === 'createProject'" />
     <EditProjectModal v-if="uiStore.activeModal === 'editProject'" />
     <TranscriptionDetailsModal v-if="uiStore.activeModal === 'transcriptionDetails'" />

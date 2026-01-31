@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { getWhisperXTranscriberService } from './services/whisperx-transcriber'
@@ -16,6 +16,7 @@ import {
   getFFmpegStatus,
   clearFFmpegCache
 } from './services/ffmpeg-installer'
+import { logger } from './services/logger'
 import type {
   CreateProjectData,
   UpdateProjectData,
@@ -857,11 +858,37 @@ ipcMain.handle('update:openDownload', async (_event, updateInfo: UpdateInfo) => 
   await updateService.openDownloadPage(updateInfo)
 })
 
+// ============ Logger IPC Handlers ============
+
+ipcMain.handle('logger:getPath', () => {
+  return logger.getPath()
+})
+
+ipcMain.handle('logger:getContents', () => {
+  return logger.getContents()
+})
+
+ipcMain.handle('logger:getTail', (_event, lines: number = 100) => {
+  return logger.getTail(lines)
+})
+
+ipcMain.handle('logger:clear', () => {
+  logger.clear()
+})
+
+ipcMain.handle('logger:openInExplorer', () => {
+  logger.openInExplorer()
+})
+
 // ============ App Lifecycle ============
 
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.xscribe.app')
+
+  // Initialize logger first
+  logger.initialize()
+  logger.log('Main', 'App starting', { version: app.getVersion(), platform: process.platform })
 
   // Initialize database
   console.log('[Main] Initializing database...')

@@ -54,16 +54,54 @@ import json
 import math
 import threading
 import time
+from datetime import datetime
+from pathlib import Path
 import torch
+
+
+# =============================================================================
+# Debug log file setup - writes to same location as Electron app logs
+# =============================================================================
+def get_log_path():
+    """Get platform-appropriate log path matching Electron's userData location"""
+    if sys.platform == 'win32':
+        # Windows: %APPDATA%/xscribe/logs/
+        base = os.environ.get('APPDATA', os.path.expanduser('~'))
+        log_dir = Path(base) / 'xscribe' / 'logs'
+    elif sys.platform == 'darwin':
+        # macOS: ~/Library/Application Support/xscribe/logs/
+        log_dir = Path.home() / 'Library' / 'Application Support' / 'xscribe' / 'logs'
+    else:
+        # Linux: ~/.config/xscribe/logs/
+        log_dir = Path.home() / '.config' / 'xscribe' / 'logs'
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / 'debug.log'
+
+LOG_FILE = None  # Initialized lazily on first log call
 
 
 # =============================================================================
 # Define log() early so it can be used throughout the script
 # =============================================================================
 def log(message):
-    """Log message to stderr (won't interfere with JSON IPC)"""
-    sys.stderr.write(f"[transcriber.py] {message}\n")
+    """Log message to stderr AND debug file for persistent diagnostics"""
+    global LOG_FILE
+    timestamp = datetime.now().isoformat(timespec='milliseconds')
+    formatted = f"[{timestamp}] [transcriber.py] {message}"
+
+    # Always write to stderr for console output
+    sys.stderr.write(formatted + "\n")
     sys.stderr.flush()
+
+    # Also write to debug log file
+    try:
+        if LOG_FILE is None:
+            LOG_FILE = get_log_path()
+        with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(formatted + '\n')
+    except Exception:
+        pass  # Don't fail if logging fails
 
 
 def send(msg):
@@ -120,6 +158,8 @@ class ProgressHeartbeat:
 
     def _heartbeat_loop(self):
         """Background thread that sends periodic progress updates."""
+        tick_count = 0
+        log(f"Heartbeat loop started for '{self.stage}' (thread={threading.current_thread().name})")
         while not self._stop_event.is_set():
             elapsed = time.time() - self._start_time
             progress_range = self.end_percent - self.start_percent
@@ -130,13 +170,18 @@ class ProgressHeartbeat:
             progress_fraction = 1 - math.exp(-elapsed / self.expected_duration)
             current_percent = self.start_percent + (progress_range * 0.95 * progress_fraction)
 
+            tick_count += 1
+            log(f"Heartbeat tick #{tick_count}: {self.stage} elapsed={int(elapsed)}s percent={current_percent:.1f}%")
+
             send_progress(self.msg_id, current_percent, self.stage,
                          f"{self.message} ({int(elapsed)}s)")
 
             self._stop_event.wait(self.interval)
+        log(f"Heartbeat loop ended for '{self.stage}' after {tick_count} ticks")
 
     def __enter__(self):
         """Start the heartbeat thread."""
+        log(f"Starting heartbeat for '{self.stage}': {self.start_percent}%->{self.end_percent}%, interval={self.interval}s")
         self._start_time = time.time()
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
@@ -145,9 +190,13 @@ class ProgressHeartbeat:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Stop the heartbeat thread."""
+        elapsed = time.time() - self._start_time if self._start_time else 0
+        log(f"Stopping heartbeat for '{self.stage}' after {elapsed:.1f}s total")
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=1.0)
+            if self._thread.is_alive():
+                log(f"WARNING: Heartbeat thread for '{self.stage}' did not stop cleanly")
         return False  # Don't suppress exceptions
 
 

@@ -19,6 +19,7 @@ import { spawn, ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { homedir } from 'os'
 import { getSetupService } from './setup-service'
+import { logger } from './logger'
 
 // Word-level timestamp data
 interface WordTimestamp {
@@ -221,6 +222,8 @@ export class WhisperXTranscriberService extends EventEmitter {
         : `${join(pythonDir, 'bin')}:${process.env.PATH}`
     }
 
+    logger.log('WhisperX', 'Starting Python process', { pythonPath, scriptPath })
+
     this.process = spawn(pythonPath, [scriptPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env
@@ -239,25 +242,36 @@ export class WhisperXTranscriberService extends EventEmitter {
         if (trimmedLine) {
           try {
             const msg = JSON.parse(trimmedLine) as PythonMessage
+            // Log progress messages to debug file for diagnostics
+            if (msg.type === 'progress') {
+              const progressMsg = msg as ProgressMessage
+              logger.log('WhisperX', `Progress: ${progressMsg.stage} ${progressMsg.percent?.toFixed(1)}%`, {
+                message: progressMsg.message
+              })
+            }
             this.handleMessage(msg)
           } catch (e) {
             console.error('[WhisperXTranscriberService] Failed to parse message:', trimmedLine, e)
+            logger.error('WhisperX', 'Failed to parse message', { line: trimmedLine, error: e })
           }
         }
       }
     })
 
-    // Handle stderr (Python logs)
+    // Handle stderr (Python logs) - these go to debug.log via Python
+    // We still log them to console for dev convenience
     this.process.stderr?.on('data', (data: Buffer) => {
       const text = data.toString().trim()
       if (text) {
         console.log('[WhisperXTranscriberService Python]', text)
+        // Note: Python already writes to debug.log directly
       }
     })
 
     // Handle process exit
     this.process.on('exit', (code, signal) => {
       console.log(`[WhisperXTranscriberService] Process exited with code ${code}, signal ${signal}`)
+      logger.log('WhisperX', 'Process exited', { code, signal })
       this.process = null
       this.modelLoaded = false
       this.readyPromise = null
@@ -271,6 +285,7 @@ export class WhisperXTranscriberService extends EventEmitter {
 
     this.process.on('error', (error) => {
       console.error('[WhisperXTranscriberService] Process error:', error)
+      logger.error('WhisperX', 'Process error', error)
       this.process = null
       this.modelLoaded = false
 

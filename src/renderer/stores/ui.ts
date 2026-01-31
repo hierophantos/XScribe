@@ -15,6 +15,7 @@ type ModalType =
   | 'transcriptionDetails'
   | 'export'
   | 'settings'
+  | 'debugLog'
   | null
 
 interface Toast {
