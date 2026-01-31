@@ -44,6 +44,16 @@ import contextlib
 import json
 import torch
 
+
+# =============================================================================
+# Define log() early so it can be used in the omegaconf block below
+# =============================================================================
+def log(message):
+    """Log message to stderr (won't interfere with JSON IPC)"""
+    sys.stderr.write(f"[transcriber.py] {message}\n")
+    sys.stderr.flush()
+
+
 # =============================================================================
 # PyTorch 2.6+ changed torch.load default to weights_only=True for security.
 # pyannote.audio models use omegaconf which requires these safe globals.
@@ -81,12 +91,6 @@ def get_device():
 def send(msg):
     """Send JSON message to stdout"""
     print(json.dumps(msg), flush=True)
-
-
-def log(message):
-    """Log message to stderr (won't interfere with JSON IPC)"""
-    sys.stderr.write(f"[transcriber.py] {message}\n")
-    sys.stderr.flush()
 
 
 def send_progress(msg_id, percent, stage, message=None):
