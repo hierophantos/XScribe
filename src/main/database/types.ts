@@ -33,6 +33,9 @@ export interface Transcription {
   createdAt: string
   updatedAt: string
   completedAt: string | null
+  // Queue metadata (for pending items)
+  queueModel: string | null
+  queueDiarization: boolean | null
   // Joined data
   tags?: Tag[]
   segmentCount?: number
@@ -122,4 +125,15 @@ export interface CreateSpeakerData {
   speakerId: string
   displayName?: string | null
   color?: string | null
+}
+
+// Data for creating a pending queue item
+export interface CreatePendingTranscriptionData {
+  filePath: string
+  fileName: string
+  fileSize?: number
+  projectId?: string | null
+  duration?: number | null
+  queueModel: string
+  queueDiarization: boolean
 }

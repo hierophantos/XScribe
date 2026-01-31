@@ -1,16 +1,27 @@
-# Pyannote Speaker Diarization Dependencies
+# WhisperX Transcription + Speaker Diarization Dependencies
 #
-# Note: pyannote.audio requires accepting the model terms on HuggingFace:
-# https://huggingface.co/pyannote/speaker-diarization-3.1
+# WhisperX provides:
+# - Fast Whisper transcription (via faster-whisper)
+# - Word-level timestamps via wav2vec2 forced alignment
+# - Built-in speaker diarization alignment
 #
 # GPU Support:
 # - CUDA: Install torch with CUDA support (pip install torch --index-url https://download.pytorch.org/whl/cu118)
-# - MPS (Apple Metal): Works automatically with standard torch on macOS
-# - CPU: Default fallback
+# - CPU: Default fallback (MPS not supported by faster-whisper)
 
-pyannote.audio>=3.1.0
-torch>=2.0.0
-torchaudio>=2.0.0
+# WhisperX - transcription with word-level timestamps
+# Note: WhisperX requires pyannote.audio 3.x (not 4.x) for compatibility
+whisperx>=3.1.0
+pyannote.audio>=3.1,<4.0  # Pin to 3.x - whisperx uses deprecated use_auth_token param
+
+# Core ML dependencies
+# Pin to <2.6 to avoid weights_only=True default breaking pyannote model loading
+torch>=2.0.0,<2.6.0
+torchaudio>=2.0.0,<2.6.0
+
+# Sherpa-ONNX for token-free speaker diarization
+# Uses ONNX models - no HuggingFace token required
+sherpa-onnx>=1.10.0
 
 # For building standalone executable
 pyinstaller>=6.0.0

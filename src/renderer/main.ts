@@ -68,6 +68,13 @@ window.electronAPI.onTranscriptionCancelled((data) => {
   })
 })
 
+// Listen for status changes (e.g., pending -> processing)
+window.electronAPI.onTranscriptionStatus((data) => {
+  libraryStore.updateTranscriptionLocally(data.id, {
+    status: data.status
+  })
+})
+
 // Listen for partial transcription results (streaming)
 window.electronAPI.onTranscriptionPartial((data) => {
   transcriptionStore.onTranscriptionPartial(data)

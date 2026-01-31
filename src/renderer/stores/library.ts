@@ -103,7 +103,20 @@ export const useLibraryStore = defineStore('library', () => {
   })
 
   const processingTranscriptions = computed(() => {
-    return transcriptions.value.filter((t) => t.status === 'processing' || t.status === 'pending')
+    // Only show items that are actively processing (not pending - those are shown in the Pending queue)
+    return transcriptions.value.filter((t) => t.status === 'processing')
+  })
+
+  // Transcriptions for the selected project (completed only, for tree view)
+  const projectTranscriptions = computed(() => {
+    if (!selectedProjectId.value) return []
+    return transcriptions.value
+      .filter(t => t.projectId === selectedProjectId.value && t.status === 'completed')
+      .sort((a, b) => {
+        const dateA = new Date(a.completedAt || a.createdAt).getTime()
+        const dateB = new Date(b.completedAt || b.createdAt).getTime()
+        return dateB - dateA // Most recent first
+      })
   })
 
   // Actions
@@ -336,6 +349,7 @@ export const useLibraryStore = defineStore('library', () => {
     filteredTranscriptions,
     recentTranscriptions,
     processingTranscriptions,
+    projectTranscriptions,
 
     // Actions
     loadLibrary,

@@ -4,7 +4,7 @@
 
 import type Database from 'better-sqlite3'
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 
 export function initializeSchema(db: Database.Database): void {
   // Enable foreign keys
@@ -25,6 +25,9 @@ function migrate(db: Database.Database, fromVersion: number): void {
   db.transaction(() => {
     if (fromVersion < 1) {
       migrateToV1(db)
+    }
+    if (fromVersion < 2) {
+      migrateToV2(db)
     }
 
     // Set new version
@@ -161,4 +164,20 @@ function migrateToV1(db: Database.Database): void {
   `)
 
   console.log('[Database] Schema v1 created successfully')
+}
+
+function migrateToV2(db: Database.Database): void {
+  console.log('[Database] Migrating to schema v2...')
+
+  // Add queue metadata columns to transcriptions table
+  // These store the model and diarization settings for pending queue items
+  db.exec(`
+    ALTER TABLE transcriptions ADD COLUMN queueModel TEXT;
+  `)
+
+  db.exec(`
+    ALTER TABLE transcriptions ADD COLUMN queueDiarization INTEGER DEFAULT 1;
+  `)
+
+  console.log('[Database] Schema v2 migration complete')
 }

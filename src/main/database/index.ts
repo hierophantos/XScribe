@@ -30,7 +30,8 @@ import type {
   CreateTranscriptionData,
   UpdateTranscriptionData,
   CreateSegmentData,
-  CreateSpeakerData
+  CreateSpeakerData,
+  CreatePendingTranscriptionData
 } from './types'
 
 export class DatabaseService {
@@ -320,9 +321,83 @@ export class DatabaseService {
   }
 
   deleteTranscription(id: string): boolean {
-    const stmt = this.db.prepare('DELETE FROM transcriptions WHERE id = ?')
-    const result = stmt.run(id)
-    return result.changes > 0
+    return this.db.transaction(() => {
+      // Explicitly clear FTS entries (triggers may not fire correctly on CASCADE)
+      this.db.prepare(
+        'DELETE FROM segments_fts WHERE rowid IN (SELECT id FROM segments WHERE transcriptionId = ?)'
+      ).run(id)
+
+      // Delete transcription (cascades to segments, speakers, tags)
+      const stmt = this.db.prepare('DELETE FROM transcriptions WHERE id = ?')
+      return stmt.run(id).changes > 0
+    })()
+  }
+
+  // ============ Queue (Pending Transcriptions) ============
+
+  /**
+   * Create a pending transcription for the queue
+   * These are items waiting to be processed
+   */
+  async createPendingTranscription(data: CreatePendingTranscriptionData): Promise<Transcription> {
+    const now = new Date().toISOString()
+    const { v4: uuidv4 } = await getUuid()
+
+    const stmt = this.db.prepare(`
+      INSERT INTO transcriptions
+        (id, projectId, filePath, fileName, fileSize, duration, language, modelUsed, status, error, createdAt, updatedAt, completedAt, queueModel, queueDiarization)
+      VALUES
+        (@id, @projectId, @filePath, @fileName, @fileSize, @duration, NULL, NULL, 'pending', NULL, @createdAt, @updatedAt, NULL, @queueModel, @queueDiarization)
+    `)
+
+    const id = uuidv4()
+    stmt.run({
+      id,
+      projectId: data.projectId || null,
+      filePath: data.filePath,
+      fileName: data.fileName,
+      fileSize: data.fileSize || null,
+      duration: data.duration || null,
+      createdAt: now,
+      updatedAt: now,
+      queueModel: data.queueModel,
+      queueDiarization: data.queueDiarization ? 1 : 0
+    })
+
+    return this.getTranscription(id)!
+  }
+
+  /**
+   * Get all pending transcriptions ordered by creation time (FIFO queue)
+   */
+  getPendingTranscriptions(): Transcription[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM transcriptions
+      WHERE status = 'pending'
+      ORDER BY createdAt ASC
+    `)
+    const transcriptions = stmt.all() as Transcription[]
+
+    // Convert queueDiarization from 0/1 to boolean
+    for (const t of transcriptions) {
+      t.queueDiarization = t.queueDiarization === 1 || t.queueDiarization === true
+    }
+
+    return transcriptions
+  }
+
+  /**
+   * Mark any 'processing' transcriptions as 'failed' (for startup recovery)
+   * This handles cases where the app was closed mid-transcription
+   */
+  recoverInterruptedTranscriptions(): number {
+    const stmt = this.db.prepare(`
+      UPDATE transcriptions
+      SET status = 'failed', error = 'Transcription was interrupted', updatedAt = ?
+      WHERE status = 'processing'
+    `)
+    const result = stmt.run(new Date().toISOString())
+    return result.changes
   }
 
   // ============ Segments ============

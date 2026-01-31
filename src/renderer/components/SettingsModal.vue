@@ -1,11 +1,62 @@
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import { useUIStore } from '../stores/ui'
 
 const uiStore = useUIStore()
 
+// Default model setting
+const defaultModel = ref<string>('base.en')
+const availableModels = ref<{ name: string; description: string; size: string; downloaded: boolean }[]>([])
+const isLoadingModels = ref(true)
+
+// Model options that make sense as defaults (excluding large models that take too long to download)
+const RECOMMENDED_DEFAULTS = ['tiny', 'tiny.en', 'base', 'base.en', 'small', 'small.en', 'medium', 'medium.en', 'large-v3']
+
+async function loadSettings() {
+  try {
+    // Load default model setting
+    const savedDefault = await window.electronAPI.db.settings.get('defaultModel')
+    if (savedDefault) {
+      defaultModel.value = savedDefault
+    }
+
+    // Load available models
+    try {
+      availableModels.value = await window.electronAPI.whisperx.getModels()
+    } catch {
+      // Fallback list
+      availableModels.value = [
+        { name: 'tiny', description: 'Fastest, multilingual', size: '~75MB', downloaded: false },
+        { name: 'tiny.en', description: 'Fastest, English only', size: '~75MB', downloaded: false },
+        { name: 'base', description: 'Fast, multilingual', size: '~145MB', downloaded: false },
+        { name: 'base.en', description: 'Fast, English only', size: '~145MB', downloaded: false },
+        { name: 'small', description: 'Balanced, multilingual', size: '~470MB', downloaded: false },
+        { name: 'small.en', description: 'Balanced, English only', size: '~470MB', downloaded: false },
+        { name: 'medium', description: 'Accurate, multilingual', size: '~1.5GB', downloaded: false },
+        { name: 'medium.en', description: 'Accurate, English only', size: '~1.5GB', downloaded: false },
+        { name: 'large-v3', description: 'Most accurate', size: '~2.9GB', downloaded: false }
+      ]
+    }
+  } catch (err) {
+    console.error('Failed to load settings:', err)
+  } finally {
+    isLoadingModels.value = false
+  }
+}
+
+async function handleDefaultModelChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  defaultModel.value = value
+  await window.electronAPI.db.settings.set('defaultModel', value)
+}
+
 function close() {
   uiStore.closeModal()
 }
+
+onMounted(() => {
+  loadSettings()
+})
 </script>
 
 <template>
@@ -21,6 +72,31 @@ function close() {
       </div>
 
       <div class="modal-body">
+        <!-- Default Model Setting -->
+        <div class="setting-group">
+          <label class="setting-label">Default Model</label>
+          <div class="setting-control">
+            <select
+              v-if="!isLoadingModels"
+              class="model-select"
+              :value="defaultModel"
+              @change="handleDefaultModelChange"
+            >
+              <option
+                v-for="model in availableModels"
+                :key="model.name"
+                :value="model.name"
+              >
+                {{ model.downloaded ? '✓' : '↓' }} {{ model.name }} - {{ model.description }} ({{ model.size }})
+              </option>
+            </select>
+            <span v-else class="loading-text">Loading models...</span>
+          </div>
+          <p class="setting-description">
+            The model selected by default for new transcriptions. ✓ = downloaded, ↓ = will download on first use.
+          </p>
+        </div>
+
         <!-- Font Size Setting -->
         <div class="setting-group">
           <label class="setting-label">Transcript Font Size</label>
@@ -89,7 +165,7 @@ function close() {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: 10001; /* Above DropZone (10000) */
 }
 
 .modal-content {
@@ -231,6 +307,28 @@ function close() {
 }
 
 .coming-soon {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.model-select {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.model-select:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.loading-text {
   font-size: 0.875rem;
   color: var(--text-muted);
   font-style: italic;
