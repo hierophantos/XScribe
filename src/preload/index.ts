@@ -46,6 +46,9 @@ interface Transcription {
   createdAt: string
   updatedAt: string
   completedAt: string | null
+  // Queue metadata (for pending items)
+  queueModel: string | null
+  queueDiarization: boolean | null
   tags?: Tag[]
   segmentCount?: number
 }
@@ -108,6 +111,16 @@ interface CreateSpeakerData {
   color?: string
 }
 
+interface CreatePendingTranscriptionData {
+  filePath: string
+  fileName: string
+  fileSize?: number
+  projectId?: string | null
+  duration?: number | null
+  queueModel: string
+  queueDiarization: boolean
+}
+
 interface SearchResult {
   transcriptionId: string
   transcription: Transcription
@@ -117,60 +130,54 @@ interface SearchResult {
   }>
 }
 
-// Transcription-related types
-interface TranscribeOptions {
+// WhisperX transcription options
+interface WhisperXTranscribeOptions {
   language?: string
-  model?: 'tiny' | 'base' | 'small' | 'medium' | 'large'
-  useDiarization?: boolean
+  modelSize?: 'tiny' | 'tiny.en' | 'base' | 'base.en' | 'small' | 'small.en' | 'medium' | 'medium.en' | 'large' | 'large-v2' | 'large-v3'
+  enableDiarization?: boolean
+  numSpeakers?: number
+  projectId?: string
 }
 
-interface TranscriptionSegment {
+// Word-level timestamp data
+interface WordTimestamp {
+  word: string
+  start: number
+  end: number
+  speaker?: string
+  confidence?: number
+}
+
+// WhisperX segment with word-level data
+interface WhisperXSegment {
   start: number
   end: number
   text: string
   speaker?: string
+  words?: WordTimestamp[]
 }
 
-interface TranscriptionResult {
-  segments: TranscriptionSegment[]
+// WhisperX transcription result
+interface WhisperXTranscriptionResult {
+  id: string
+  segments: WhisperXSegment[]
   language: string
   duration: number
+  speakers: string[]
+}
+
+// WhisperX model info
+interface WhisperXModelInfo {
+  name: string
+  description: string
+  size: string
+  downloaded: boolean
 }
 
 interface TranscriptionProgress {
   percent: number
   currentTime: number
   totalTime: number
-}
-
-interface SpeakerSegment {
-  speaker: string
-  start: number
-  end: number
-}
-
-interface DiarizationResult {
-  speakers: string[]
-  segments: SpeakerSegment[]
-}
-
-interface DiarizationProgress {
-  percent: number
-  stage: 'loading' | 'processing' | 'clustering'
-}
-
-interface ModelInfo {
-  name: string
-  available: boolean
-  size: string
-  description: string
-}
-
-interface ModelDownloadProgress {
-  modelName: string
-  percent: number
-  downloadedBytes: number
-  totalBytes: number
 }
 
 type ExportFormat = 'srt' | 'vtt' | 'txt' | 'json' | 'docx'
@@ -183,6 +190,34 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Dialog
   openFileDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:openFile'),
+  openDirectoryDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:openDirectory'),
+
+  // Media Scanner
+  media: {
+    scanDirectory: (
+      dirPath: string,
+      recursive: boolean = false
+    ): Promise<{
+      files: Array<{
+        path: string
+        name: string
+        size: number
+        duration: number | null
+        isVideo: boolean
+        alreadyTranscribed: boolean
+      }>
+      totalCount: number
+      totalDuration: number
+      errors: string[]
+    }> => ipcRenderer.invoke('media:scanDirectory', dirPath, recursive),
+
+    estimateTime: (
+      durationSeconds: number,
+      modelSize: string,
+      enableDiarization: boolean
+    ): Promise<number> =>
+      ipcRenderer.invoke('media:estimateTime', durationSeconds, modelSize, enableDiarization)
+  },
 
   // App info
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
@@ -206,10 +241,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
-  // Transcription
+  // WhisperX Transcription (word-level timestamps + built-in diarization)
+  whisperx: {
+    transcribe: (filePath: string, options?: WhisperXTranscribeOptions): Promise<WhisperXTranscriptionResult> =>
+      ipcRenderer.invoke('transcribe:whisperx', filePath, options),
+    getModels: (): Promise<WhisperXModelInfo[]> => ipcRenderer.invoke('whisperx:getModels'),
+    isReady: (): Promise<boolean> => ipcRenderer.invoke('whisperx:isReady'),
+    loadModel: (modelSize: string, language?: string): Promise<boolean> =>
+      ipcRenderer.invoke('whisperx:loadModel', modelSize, language)
+  },
+
+  // Transcription control
   transcribe: {
-    start: (filePath: string, options?: TranscribeOptions): Promise<TranscriptionResult & { id: string }> =>
-      ipcRenderer.invoke('transcribe:start', filePath, options),
     cancel: (transcriptionId: string): Promise<{ success: boolean }> =>
       ipcRenderer.invoke('transcribe:cancel', transcriptionId)
   },
@@ -251,31 +294,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('transcribe:partial', (_event, data) => callback(data))
   },
 
-  // Diarization
-  diarize: (filePath: string): Promise<DiarizationResult> =>
-    ipcRenderer.invoke('diarize:start', filePath),
-
-  onDiarizationProgress: (callback: (progress: DiarizationProgress) => void) => {
-    ipcRenderer.on('diarize:progress', (_event, progress) => callback(progress))
-  },
-
-  // Models
-  models: {
-    getDirectory: (): Promise<string | null> => ipcRenderer.invoke('models:getDirectory'),
-    getAvailable: (): Promise<ModelInfo[]> => ipcRenderer.invoke('models:getAvailable'),
-    load: (modelName: string): Promise<boolean> => ipcRenderer.invoke('models:load', modelName),
-    isReady: (): Promise<boolean> => ipcRenderer.invoke('models:isReady'),
-    download: (modelName: string): Promise<boolean> => ipcRenderer.invoke('models:download', modelName),
-    onDownloadProgress: (
-      callback: (data: { modelName: string; percent: number; downloadedBytes: number; totalBytes: number }) => void
-    ) => {
-      ipcRenderer.on('models:downloadProgress', (_event, data) => callback(data))
-    },
-    removeDownloadProgressListener: () => {
-      ipcRenderer.removeAllListeners('models:downloadProgress')
-    }
-  },
-
   // Database - Projects
   db: {
     projects: {
@@ -298,7 +316,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       delete: (id: string): Promise<boolean> => ipcRenderer.invoke('db:transcriptions:delete', id),
       recent: (limit?: number): Promise<Transcription[]> => ipcRenderer.invoke('db:transcriptions:recent', limit),
       search: (query: string, limit?: number): Promise<SearchResult[]> =>
-        ipcRenderer.invoke('db:transcriptions:search', query, limit)
+        ipcRenderer.invoke('db:transcriptions:search', query, limit),
+      // Queue methods
+      createPending: (data: CreatePendingTranscriptionData): Promise<Transcription> =>
+        ipcRenderer.invoke('db:transcriptions:createPending', data),
+      getPending: (): Promise<Transcription[]> =>
+        ipcRenderer.invoke('db:transcriptions:getPending'),
+      recoverInterrupted: (): Promise<number> =>
+        ipcRenderer.invoke('db:transcriptions:recoverInterrupted')
     },
 
     segments: {
@@ -339,7 +364,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ): Promise<{ content: string; mimeType: string; extension: string }> =>
       ipcRenderer.invoke('export:transcription', transcriptionId, format),
     save: (transcriptionId: string, format: ExportFormat): Promise<string | null> =>
-      ipcRenderer.invoke('export:save', transcriptionId, format)
+      ipcRenderer.invoke('export:save', transcriptionId, format),
+    project: (projectId: string, format: ExportFormat): Promise<{ exportDir: string; count: number } | null> =>
+      ipcRenderer.invoke('export:project', projectId, format)
   }
 })
 
@@ -349,6 +376,30 @@ declare global {
     electronAPI: {
       getPathForFile: (file: File) => string
       openFileDialog: () => Promise<string | null>
+      openDirectoryDialog: () => Promise<string | null>
+      media: {
+        scanDirectory: (
+          dirPath: string,
+          recursive?: boolean
+        ) => Promise<{
+          files: Array<{
+            path: string
+            name: string
+            size: number
+            duration: number | null
+            isVideo: boolean
+            alreadyTranscribed: boolean
+          }>
+          totalCount: number
+          totalDuration: number
+          errors: string[]
+        }>
+        estimateTime: (
+          durationSeconds: number,
+          modelSize: string,
+          enableDiarization: boolean
+        ) => Promise<number>
+      }
       getVersion: () => Promise<string>
       getPlatform: () => Promise<string>
       ffmpeg: {
@@ -359,8 +410,13 @@ declare global {
         onInstallProgress: (callback: (data: { message: string }) => void) => void
         removeInstallProgressListener: () => void
       }
+      whisperx: {
+        transcribe: (filePath: string, options?: WhisperXTranscribeOptions) => Promise<WhisperXTranscriptionResult>
+        getModels: () => Promise<WhisperXModelInfo[]>
+        isReady: () => Promise<boolean>
+        loadModel: (modelSize: string, language?: string) => Promise<boolean>
+      }
       transcribe: {
-        start: (filePath: string, options?: TranscribeOptions) => Promise<TranscriptionResult & { id: string }>
         cancel: (transcriptionId: string) => Promise<{ success: boolean }>
       }
       onTranscriptionCreated: (callback: (data: { id: string; fileName: string; status: string }) => void) => void
@@ -379,17 +435,6 @@ declare global {
           duration: number
         }) => void
       ) => void
-      diarize: (filePath: string) => Promise<DiarizationResult>
-      onDiarizationProgress: (callback: (progress: DiarizationProgress) => void) => void
-      models: {
-        getDirectory: () => Promise<string | null>
-        getAvailable: () => Promise<ModelInfo[]>
-        load: (modelName: string) => Promise<boolean>
-        isReady: () => Promise<boolean>
-        download: (modelName: string) => Promise<boolean>
-        onDownloadProgress: (callback: (data: ModelDownloadProgress) => void) => void
-        removeDownloadProgressListener: () => void
-      }
       db: {
         projects: {
           list: () => Promise<Project[]>
@@ -406,6 +451,10 @@ declare global {
           delete: (id: string) => Promise<boolean>
           recent: (limit?: number) => Promise<Transcription[]>
           search: (query: string, limit?: number) => Promise<SearchResult[]>
+          // Queue methods
+          createPending: (data: CreatePendingTranscriptionData) => Promise<Transcription>
+          getPending: () => Promise<Transcription[]>
+          recoverInterrupted: () => Promise<number>
         }
         segments: {
           get: (transcriptionId: string) => Promise<Segment[]>
@@ -434,6 +483,7 @@ declare global {
           format: ExportFormat
         ) => Promise<{ content: string; mimeType: string; extension: string }>
         save: (transcriptionId: string, format: ExportFormat) => Promise<string | null>
+        project: (projectId: string, format: ExportFormat) => Promise<{ exportDir: string; count: number } | null>
       }
     }
   }

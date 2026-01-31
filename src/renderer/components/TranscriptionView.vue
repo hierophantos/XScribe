@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch, nextTick, onMounted } from 'vue'
 import { useTranscriptionStore } from '../stores/transcription'
 import { useUIStore } from '../stores/ui'
 
@@ -8,6 +8,14 @@ const uiStore = useUIStore()
 
 const editingSpeaker = ref<string | null>(null)
 const editingName = ref('')
+
+// Context menu state
+const contextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  hasSelection: false
+})
 
 const speakerColors = [
   '#3b82f6', // blue
@@ -70,6 +78,138 @@ const groupedSegments = computed(() => {
   return groups
 })
 
+// Search highlighting
+interface MatchPosition {
+  groupIndex: number
+  segmentIndex: number
+  startPos: number
+  globalIndex: number
+}
+
+const matchPositions = computed<MatchPosition[]>(() => {
+  if (!uiStore.activeSearchTerm) return []
+
+  const term = uiStore.activeSearchTerm.toLowerCase()
+  const matches: MatchPosition[] = []
+
+  let globalMatchIndex = 0
+  groupedSegments.value.forEach((group, gIdx) => {
+    group.segments.forEach((segment, sIdx) => {
+      const text = segment.text.toLowerCase()
+      let pos = 0
+      while ((pos = text.indexOf(term, pos)) !== -1) {
+        matches.push({
+          groupIndex: gIdx,
+          segmentIndex: sIdx,
+          startPos: pos,
+          globalIndex: globalMatchIndex++
+        })
+        pos += term.length
+      }
+    })
+  })
+
+  return matches
+})
+
+// Update total matches when positions change
+watch(
+  matchPositions,
+  (positions) => {
+    uiStore.setTotalMatches(positions.length)
+  },
+  { immediate: true }
+)
+
+// Helper to escape HTML entities
+function escapeHtml(text: string): string {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
+}
+
+// Helper to escape regex special characters
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// Highlight text with search matches
+function highlightText(text: string, groupIndex: number, segmentIndex: number): string {
+  if (!uiStore.activeSearchTerm) return escapeHtml(text)
+
+  const term = uiStore.activeSearchTerm
+  const regex = new RegExp(`(${escapeRegex(term)})`, 'gi')
+
+  // Count matches before this segment to determine global index
+  const matchesBefore = matchPositions.value.filter(
+    (m) => m.groupIndex < groupIndex || (m.groupIndex === groupIndex && m.segmentIndex < segmentIndex)
+  ).length
+
+  let matchIndex = 0
+  return escapeHtml(text).replace(regex, (match) => {
+    const globalIndex = matchesBefore + matchIndex++
+    const isActive = globalIndex === uiStore.activeMatchIndex
+    const className = isActive ? 'search-match active' : 'search-match'
+    const id = isActive ? 'active-match' : ''
+    return `<mark class="${className}"${id ? ` id="${id}"` : ''}>${match}</mark>`
+  })
+}
+
+// Scroll to active match
+function scrollToActiveMatch() {
+  nextTick(() => {
+    const activeElement = document.getElementById('active-match')
+    if (activeElement) {
+      activeElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  })
+}
+
+// Watch activeMatchIndex to scroll when navigating
+watch(
+  () => uiStore.activeMatchIndex,
+  () => {
+    scrollToActiveMatch()
+  }
+)
+
+// Initial scroll when transcription loads with search term
+onMounted(() => {
+  if (uiStore.activeSearchTerm && matchPositions.value.length > 0) {
+    // Small delay to ensure DOM is ready
+    setTimeout(() => {
+      scrollToActiveMatch()
+    }, 100)
+  }
+})
+
+// Watch for when segments change (new transcription loaded) and scroll to match
+watch(
+  () => transcriptionStore.segments,
+  () => {
+    if (uiStore.activeSearchTerm) {
+      // Reset to first match when a new transcription loads
+      uiStore.activeMatchIndex = 0
+      setTimeout(() => {
+        scrollToActiveMatch()
+      }, 100)
+    }
+  }
+)
+
+// Navigation functions
+function goToNextMatch() {
+  uiStore.nextMatch()
+}
+
+function goToPrevMatch() {
+  uiStore.prevMatch()
+}
+
+function clearSearch() {
+  uiStore.clearSearchContext()
+}
+
 function startEditSpeaker(speakerId: string | null) {
   if (!speakerId) return
   editingSpeaker.value = speakerId
@@ -109,17 +249,64 @@ async function copyToClipboard() {
 function openExportModal() {
   uiStore.openModal('export', { transcriptionId: transcriptionStore.activeTranscriptionId || undefined })
 }
+
+// Context menu functions
+function showContextMenu(event: MouseEvent) {
+  event.preventDefault()
+  const selection = window.getSelection()?.toString().trim()
+  contextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    hasSelection: !!selection
+  }
+}
+
+function hideContextMenu() {
+  contextMenu.value.visible = false
+}
+
+async function copySelectedText() {
+  const selection = window.getSelection()?.toString()
+  if (selection) {
+    try {
+      await navigator.clipboard.writeText(selection)
+      uiStore.showSuccess('Copied to clipboard')
+    } catch {
+      uiStore.showError('Failed to copy')
+    }
+  }
+  hideContextMenu()
+}
+
+function openDetails() {
+  uiStore.openModal('transcriptionDetails')
+  hideContextMenu()
+}
+
+async function exportAs(format: string) {
+  const transcriptionId = transcriptionStore.activeTranscriptionId
+  if (!transcriptionId) return
+
+  try {
+    const filePath = await window.electronAPI.export.save(transcriptionId, format)
+    if (filePath) {
+      uiStore.showSuccess(`Exported to ${filePath.split('/').pop()}`)
+    }
+  } catch (err) {
+    uiStore.showError('Export failed')
+  }
+  hideContextMenu()
+}
 </script>
 
 <template>
   <div class="transcription-view">
     <div class="transcript-header">
       <div class="meta">
-        <span class="segments">{{ transcriptionStore.segments.length }} segments</span>
         <span class="duration">{{ formatTime(transcriptionStore.totalDuration) }}</span>
-        <span v-if="transcriptionStore.uniqueSpeakers.length > 0" class="speakers">
-          {{ transcriptionStore.uniqueSpeakers.length }} speakers
-        </span>
+        <span class="separator">·</span>
+        <span class="filename">{{ transcriptionStore.activeTranscription?.fileName || 'Unknown' }}</span>
       </div>
       <div class="actions">
         <!-- Font size controls -->
@@ -160,10 +347,45 @@ function openExportModal() {
           </svg>
           Copy
         </button>
+
+        <!-- Search navigation (when search term active) -->
+        <template v-if="uiStore.activeSearchTerm">
+          <div class="actions-divider"></div>
+          <div class="search-nav">
+            <button
+              class="search-nav-btn"
+              @click="goToPrevMatch"
+              :disabled="uiStore.totalMatches === 0"
+              title="Previous match"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="m18 15-6-6-6 6" />
+              </svg>
+            </button>
+            <span class="match-counter">
+              {{ uiStore.totalMatches > 0 ? `${uiStore.activeMatchIndex + 1} of ${uiStore.totalMatches}` : 'No matches' }}
+            </span>
+            <button
+              class="search-nav-btn"
+              @click="goToNextMatch"
+              :disabled="uiStore.totalMatches === 0"
+              title="Next match"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+            <button class="search-clear-btn" @click="clearSearch" title="Clear search">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </template>
       </div>
     </div>
 
-    <div class="transcript-content">
+    <div class="transcript-content" @contextmenu="showContextMenu">
       <div v-if="transcriptionStore.segments.length === 0" class="empty-state">
         <p>No transcript content</p>
       </div>
@@ -194,12 +416,56 @@ function openExportModal() {
           <span class="time-range"> {{ formatTime(group.start) }} - {{ formatTime(group.end) }} </span>
         </div>
         <div class="speaker-text">
-          <span v-for="(segment, sIndex) in group.segments" :key="sIndex" class="segment">
-            {{ segment.text }}{{ ' ' }}
-          </span>
+          <p
+            v-for="(segment, sIndex) in group.segments"
+            :key="sIndex"
+            class="segment"
+            v-html="highlightText(segment.text, index, sIndex)"
+          ></p>
         </div>
       </div>
     </div>
+
+    <!-- Context Menu -->
+    <Teleport to="body">
+      <div
+        v-if="contextMenu.visible"
+        class="context-menu"
+        :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
+        @click.stop
+      >
+        <button v-if="contextMenu.hasSelection" class="context-menu-item" @click="copySelectedText">
+          Copy Selection
+        </button>
+        <button class="context-menu-item" @click="copyToClipboard(); hideContextMenu()">
+          Copy All
+        </button>
+        <div class="context-menu-divider"></div>
+        <button class="context-menu-item" @click="openDetails">
+          Details
+        </button>
+        <div class="context-menu-submenu">
+          <button class="context-menu-item has-submenu">
+            Export
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </button>
+          <div class="submenu">
+            <button class="context-menu-item" @click="exportAs('txt')">Plain Text (.txt)</button>
+            <button class="context-menu-item" @click="exportAs('srt')">SRT Subtitles (.srt)</button>
+            <button class="context-menu-item" @click="exportAs('vtt')">WebVTT (.vtt)</button>
+            <button class="context-menu-item" @click="exportAs('json')">JSON (.json)</button>
+            <button class="context-menu-item" @click="exportAs('docx')">Word Document (.docx)</button>
+          </div>
+        </div>
+      </div>
+      <div
+        v-if="contextMenu.visible"
+        class="context-menu-overlay"
+        @click="hideContextMenu"
+      />
+    </Teleport>
   </div>
 </template>
 
@@ -403,12 +669,142 @@ function openExportModal() {
 }
 
 .segment {
+  margin: 0 0 0.5em 0; /* Space between paragraphs */
   cursor: pointer;
   border-radius: 2px;
   transition: background 0.15s;
 }
 
+.segment:last-child {
+  margin-bottom: 0;
+}
+
 .segment:hover {
   background: var(--bg-hover);
+}
+
+/* Context Menu */
+.context-menu {
+  position: fixed;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 10001;
+  min-width: 140px;
+  padding: 4px;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.context-menu-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 4px 0;
+}
+
+.context-menu-submenu {
+  position: relative;
+}
+
+.context-menu-item.has-submenu {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.context-menu-submenu .submenu {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 180px;
+  padding: 4px;
+  z-index: 10002;
+}
+
+.context-menu-submenu:hover .submenu {
+  display: block;
+}
+
+.context-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+}
+
+/* Search navigation */
+.search-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.search-nav-btn,
+.search-clear-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0.25rem;
+  cursor: pointer;
+  color: var(--text-secondary);
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.search-nav-btn:hover:not(:disabled),
+.search-clear-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.search-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.match-counter {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  min-width: 70px;
+  text-align: center;
+  font-family: var(--font-mono);
+}
+
+/* Search highlight styles */
+:deep(.search-match) {
+  background-color: rgba(255, 200, 0, 0.4);
+  border-radius: 2px;
+  padding: 0 2px;
+  margin: 0 -2px;
+}
+
+:deep(.search-match.active) {
+  background-color: rgba(255, 150, 0, 0.7);
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
 }
 </style>

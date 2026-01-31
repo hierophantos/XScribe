@@ -10,6 +10,9 @@ import ProgressBar from './components/ProgressBar.vue'
 import ToastContainer from './components/ToastContainer.vue'
 import ExportModal from './components/ExportModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
+import AddProjectModal from './components/AddProjectModal.vue'
+import EditProjectModal from './components/EditProjectModal.vue'
+import TranscriptionDetailsModal from './components/TranscriptionDetailsModal.vue'
 import ModelSelector from './components/ModelSelector.vue'
 
 const libraryStore = useLibraryStore()
@@ -20,6 +23,19 @@ const currentFile = ref<string | null>(null)
 const showDropZone = ref(true)
 const useDiarization = ref(true)
 const selectedModel = ref<string>('')
+const defaultModel = ref<string>('base.en')
+
+// Load default model from settings
+async function loadDefaultModel() {
+  try {
+    const saved = await window.electronAPI.db.settings.get('defaultModel')
+    if (saved) {
+      defaultModel.value = saved
+    }
+  } catch (err) {
+    console.error('Failed to load default model setting:', err)
+  }
+}
 
 // Computed
 const isProcessing = computed(() => {
@@ -32,6 +48,45 @@ const progressPercent = computed(() => {
 
 const hasResult = computed(() => {
   return transcriptionStore.status === 'completed' && transcriptionStore.segments.length > 0
+})
+
+// Check if we're in the downloading phase
+const isDownloading = computed(() => {
+  return transcriptionStore.progress?.stage === 'downloading'
+})
+
+// Check if progress is indeterminate (percent < 0 means downloading without progress info)
+const isIndeterminate = computed(() => {
+  return (transcriptionStore.progress?.percent ?? 0) < 0
+})
+
+// Get a friendly label for the current stage
+const stageLabel = computed(() => {
+  const stage = transcriptionStore.progress?.stage
+  const label = transcriptionStore.progress?.stageLabel
+
+  if (label) return label
+
+  switch (stage) {
+    case 'downloading':
+      return 'Downloading model...'
+    case 'transcribing':
+      return 'Transcribing audio...'
+    case 'aligning':
+      return 'Aligning words...'
+    case 'diarizing':
+      return 'Identifying speakers...'
+    case 'assigning':
+      return 'Assigning speakers...'
+    case 'processing':
+      return 'Processing...'
+    case 'formatting':
+      return 'Formatting results...'
+    case 'complete':
+      return 'Complete!'
+    default:
+      return 'Processing...'
+  }
 })
 
 // Methods
@@ -94,8 +149,16 @@ watch(
   }
 )
 
-onMounted(() => {
-  // If there are recent transcriptions, we could auto-load one here
+onMounted(async () => {
+  // Load user's default model preference
+  loadDefaultModel()
+
+  // Load pending queue from database and resume processing
+  await transcriptionStore.loadPendingQueue()
+  if (transcriptionStore.pendingQueue.length > 0) {
+    console.log(`[App] Found ${transcriptionStore.pendingQueue.length} pending transcriptions, resuming...`)
+    transcriptionStore.processQueue()
+  }
 })
 </script>
 
@@ -140,6 +203,7 @@ onMounted(() => {
           <div class="options">
             <ModelSelector
               :selected-model="selectedModel"
+              :default-model="defaultModel"
               @model-selected="handleModelSelected"
             />
 
@@ -159,14 +223,20 @@ onMounted(() => {
       <div v-else-if="isProcessing" class="content-wrapper">
         <header class="file-header">
           <div class="file-info">
-            <h2>{{ currentFile?.split('/').pop() || 'Processing...' }}</h2>
+            <h2>{{ currentFile?.split('/').pop() || transcriptionStore.currentProcessingFileName || 'Processing...' }}</h2>
           </div>
         </header>
 
         <div class="processing-state">
           <div class="spinner"></div>
-          <p>{{ transcriptionStore.progress?.stageLabel || 'Processing...' }}</p>
-          <ProgressBar :percent="progressPercent" />
+          <p class="stage-label">{{ stageLabel }}</p>
+          <ProgressBar :percent="progressPercent" :label="isDownloading ? 'Downloading' : 'Transcribing'" />
+          <p v-if="isDownloading && isIndeterminate" class="stage-hint">
+            Downloading model from HuggingFace (this may take a few minutes)
+          </p>
+          <p v-else-if="isDownloading" class="stage-hint">
+            Model will be cached for future use
+          </p>
         </div>
       </div>
 
@@ -190,6 +260,9 @@ onMounted(() => {
     <!-- Modals -->
     <ExportModal v-if="uiStore.activeModal === 'export'" />
     <SettingsModal v-if="uiStore.activeModal === 'settings'" />
+    <AddProjectModal v-if="uiStore.activeModal === 'createProject'" />
+    <EditProjectModal v-if="uiStore.activeModal === 'editProject'" />
+    <TranscriptionDetailsModal v-if="uiStore.activeModal === 'transcriptionDetails'" />
   </div>
 </template>
 
@@ -321,6 +394,16 @@ onMounted(() => {
   font-size: 1.25rem;
   margin: 0;
   font-weight: 500;
+}
+
+.processing-state .stage-label {
+  font-size: 1.125rem;
+}
+
+.processing-state .stage-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 400;
 }
 
 .options {

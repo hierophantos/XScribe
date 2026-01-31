@@ -12,6 +12,7 @@ type ModalType =
   | 'createTag'
   | 'deleteTag'
   | 'deleteTranscription'
+  | 'transcriptionDetails'
   | 'export'
   | 'settings'
   | null
@@ -59,6 +60,11 @@ export const useUIStore = defineStore('ui', () => {
   const sidebarCollapsed = ref(false)
   const isDraggingFile = ref(false)
   const transcriptFontSize = ref(getInitialFontSize())
+
+  // Search highlighting state
+  const activeSearchTerm = ref<string | null>(null)
+  const activeMatchIndex = ref(0)
+  const totalMatches = ref(0)
 
   // Initialize font size on creation
   applyFontSize(transcriptFontSize.value)
@@ -150,6 +156,35 @@ export const useUIStore = defineStore('ui', () => {
     setTranscriptFontSize(transcriptFontSize.value - 2)
   }
 
+  // Search highlighting actions
+  function setSearchContext(term: string | null) {
+    activeSearchTerm.value = term
+    activeMatchIndex.value = 0
+    totalMatches.value = 0
+  }
+
+  function clearSearchContext() {
+    activeSearchTerm.value = null
+    activeMatchIndex.value = 0
+    totalMatches.value = 0
+  }
+
+  function setTotalMatches(count: number) {
+    totalMatches.value = count
+  }
+
+  function nextMatch() {
+    if (totalMatches.value > 0) {
+      activeMatchIndex.value = (activeMatchIndex.value + 1) % totalMatches.value
+    }
+  }
+
+  function prevMatch() {
+    if (totalMatches.value > 0) {
+      activeMatchIndex.value = (activeMatchIndex.value - 1 + totalMatches.value) % totalMatches.value
+    }
+  }
+
   return {
     // State
     activeModal,
@@ -186,6 +221,16 @@ export const useUIStore = defineStore('ui', () => {
     // Font size
     setTranscriptFontSize,
     increaseFontSize,
-    decreaseFontSize
+    decreaseFontSize,
+
+    // Search highlighting
+    activeSearchTerm,
+    activeMatchIndex,
+    totalMatches,
+    setSearchContext,
+    clearSearchContext,
+    setTotalMatches,
+    nextMatch,
+    prevMatch
   }
 })

@@ -1,12 +1,15 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { getTranscriberService } from './services/transcriber'
-import { getDiarizerService, mergeTranscriptionWithDiarization } from './services/diarizer'
+import { getWhisperXTranscriberService } from './services/whisperx-transcriber'
 import { getDatabaseService, closeDatabaseService } from './database'
 import { getExporterService, ExportFormat } from './services/exporter'
 import {
-  checkFFmpeg,
+  scanDirectory,
+  estimateTranscriptionTime,
+  type ScannedFile
+} from './services/media-scanner'
+import {
   promptFFmpegInstall,
   installFFmpeg,
   showManualInstructions,
@@ -20,7 +23,8 @@ import type {
   CreateTranscriptionData,
   UpdateTranscriptionData,
   CreateSegmentData,
-  CreateSpeakerData
+  CreateSpeakerData,
+  CreatePendingTranscriptionData
 } from './database'
 
 let mainWindow: BrowserWindow | null = null
@@ -68,6 +72,41 @@ ipcMain.handle('dialog:openFile', async () => {
   return result.canceled ? null : result.filePaths[0]
 })
 
+ipcMain.handle('dialog:openDirectory', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory']
+  })
+  return result.canceled ? null : result.filePaths[0]
+})
+
+// ============ Media Scanner IPC Handlers ============
+
+ipcMain.handle(
+  'media:scanDirectory',
+  async (_event, dirPath: string, recursive: boolean = false) => {
+    const db = getDatabaseService()
+
+    // Get only completed transcription file paths to mark already-transcribed files
+    // (don't include pending, processing, failed, or cancelled transcriptions)
+    const existingTranscriptions = db.getTranscriptions({ status: 'completed' })
+    const existingPaths = new Set(existingTranscriptions.map((t) => t.filePath))
+
+    return scanDirectory(dirPath, existingPaths, recursive)
+  }
+)
+
+ipcMain.handle(
+  'media:estimateTime',
+  async (
+    _event,
+    durationSeconds: number,
+    modelSize: string,
+    enableDiarization: boolean
+  ) => {
+    return estimateTranscriptionTime(durationSeconds, modelSize, enableDiarization)
+  }
+)
+
 // ============ App Info IPC Handlers ============
 
 ipcMain.handle('app:getVersion', () => {
@@ -105,7 +144,8 @@ ipcMain.handle('ffmpeg:showManualInstructions', async () => {
   await showManualInstructions(mainWindow)
 })
 
-// ============ Transcription IPC Handlers ============
+// ============ WhisperX Transcription IPC Handlers ============
+// WhisperX provides word-level timestamps and built-in speaker diarization
 
 ipcMain.handle(
   'transcribe:start',
@@ -114,13 +154,14 @@ ipcMain.handle(
     filePath: string,
     options?: {
       language?: string
-      model?: string
-      useDiarization?: boolean
+      modelSize?: string
+      enableDiarization?: boolean
+      numSpeakers?: number
       projectId?: string
     }
   ) => {
-    const transcriber = getTranscriberService()
-    const diarizer = getDiarizerService()
+    // Redirect to WhisperX - this maintains backward compatibility
+    const whisperX = getWhisperXTranscriberService()
     const db = getDatabaseService()
 
     // Get file info
@@ -143,7 +184,7 @@ ipcMain.handle(
       fileSize,
       projectId: options?.projectId,
       language: options?.language,
-      modelUsed: options?.model || 'base'
+      modelUsed: `whisperx-${options?.modelSize || 'base'}`
     })
 
     // Send the transcription ID immediately so UI can track it
@@ -162,138 +203,61 @@ ipcMain.handle(
       })
 
       // Send progress updates to renderer
-      // Scale to 0-70% if diarization is enabled, otherwise 0-100%
-      const sendProgress = (progress: { percent: number; currentTime: number; totalTime: number }) => {
-        const scaledPercent = options?.useDiarization
-          ? Math.round(progress.percent * 0.7)
-          : progress.percent
-
+      const sendProgress = (progress: { percent: number; stage: string; message?: string }) => {
         event.sender.send('transcribe:progress', {
           id: transcriptionRecord.id,
-          percent: scaledPercent,
-          currentTime: progress.currentTime,
-          totalTime: progress.totalTime,
-          stage: 'transcribing',
-          stageLabel: 'Transcribing audio...'
-        })
-      }
-
-      // Send partial results for streaming display
-      const partialResultHandler = (data: {
-        segments: Array<{ start: number; end: number; text: string }>
-        text: string
-        duration: number
-      }) => {
-        event.sender.send('transcribe:partial', {
-          id: transcriptionRecord.id,
-          segments: data.segments,
-          text: data.text,
-          duration: data.duration
-        })
-      }
-      transcriber.on('partialResult', partialResultHandler)
-
-      // Transcribe the audio
-      let transcription
-      try {
-        transcription = await transcriber.transcribe(filePath, {
-          language: options?.language,
-          onProgress: sendProgress
-        })
-      } finally {
-        // Remove the partial result listener
-        transcriber.off('partialResult', partialResultHandler)
-      }
-
-      let finalSegments = transcription.segments
-
-      // If diarization is requested, identify speakers
-      if (options?.useDiarization) {
-        console.log('[Main] Starting diarization...')
-
-        // Send diarization start progress
-        event.sender.send('transcribe:progress', {
-          id: transcriptionRecord.id,
-          percent: 70,
+          percent: progress.percent,
           currentTime: 0,
           totalTime: 0,
-          stage: 'diarizing',
-          stageLabel: 'Identifying speakers...'
+          stage: progress.stage,
+          stageLabel: progress.message || progress.stage
         })
-
-        try {
-          const diarization = await diarizer.diarize(filePath, {
-            onProgress: (progress) => {
-              // Scale diarization progress from 0-100 to 70-100
-              const scaledPercent = 70 + Math.round(progress.percent * 0.3)
-              event.sender.send('transcribe:progress', {
-                id: transcriptionRecord.id,
-                percent: scaledPercent,
-                currentTime: 0,
-                totalTime: 0,
-                stage: 'diarizing',
-                stageLabel: `Identifying speakers (${progress.stage})...`
-              })
-            }
-          })
-
-          // DEBUG: Log diarization results
-          console.log('[Main] Diarization completed:', {
-            speakerCount: diarization.speakers.length,
-            speakers: diarization.speakers,
-            segmentCount: diarization.segments.length,
-            sampleSegments: diarization.segments.slice(0, 3)
-          })
-
-          // Merge transcription with speaker labels
-          finalSegments = mergeTranscriptionWithDiarization(
-            transcription.segments,
-            diarization
-          )
-
-          // DEBUG: Log merged segments
-          console.log('[Main] Merged segments:', {
-            count: finalSegments.length,
-            withSpeaker: finalSegments.filter((s) => s.speaker).length,
-            sampleSegments: finalSegments.slice(0, 3)
-          })
-
-          // Save speakers to database
-          const uniqueSpeakers = [...new Set(diarization.speakers)]
-          const speakersData = uniqueSpeakers.map((speakerId, index) => ({
-            speakerId,
-            displayName: `Speaker ${index + 1}`
-          }))
-          console.log('[Main] Saving speakers:', speakersData)
-          await db.saveSpeakers(transcriptionRecord.id, speakersData)
-        } catch (diarizationError) {
-          console.warn('[Main] Diarization failed, continuing without speaker labels:', diarizationError)
-        }
       }
 
-      // Save segments to database
-      const segmentsData = finalSegments.map((seg) => ({
+      // Transcribe with WhisperX (includes word-level timestamps and optional diarization)
+      console.log('[Main] Starting WhisperX transcription...')
+      const result = await whisperX.transcribe(filePath, {
+        language: options?.language,
+        modelSize: (options?.modelSize || 'base') as 'tiny' | 'base' | 'small' | 'medium' | 'large',
+        enableDiarization: options?.enableDiarization ?? true,
+        numSpeakers: options?.numSpeakers,
+        onProgress: sendProgress
+      })
+
+      console.log('[Main] WhisperX transcription complete:', {
+        segmentCount: result.segments.length,
+        language: result.language,
+        duration: result.duration,
+        speakerCount: result.speakers.length
+      })
+
+      // Format segments for database (WhisperX already has speaker labels)
+      const segmentsData = result.segments.map((seg) => ({
         speakerId: seg.speaker || undefined,
         startTime: seg.start,
         endTime: seg.end,
         text: seg.text
       }))
 
-      // DEBUG: Log segments being saved
-      console.log('[Main] Saving segments:', {
-        count: segmentsData.length,
-        withSpeakerId: segmentsData.filter((s) => s.speakerId).length,
-        sample: segmentsData.slice(0, 3)
-      })
-
+      // Save segments to database
       db.saveSegments(transcriptionRecord.id, segmentsData)
+
+      // Save speakers if diarization was enabled
+      if (result.speakers.length > 0) {
+        const speakersData = result.speakers.map((speakerId, index) => ({
+          speakerId,
+          displayName: `Speaker ${index + 1}`
+        }))
+        console.log('[Main] Saving speakers:', speakersData)
+        await db.saveSpeakers(transcriptionRecord.id, speakersData)
+      }
 
       // Update transcription record with completion info
       const completedAt = new Date().toISOString()
       db.updateTranscription(transcriptionRecord.id, {
         status: 'completed',
-        duration: transcription.duration,
-        language: transcription.language,
+        duration: result.duration,
+        language: result.language,
         completedAt
       })
 
@@ -301,17 +265,173 @@ ipcMain.handle(
       event.sender.send('transcribe:completed', {
         id: transcriptionRecord.id,
         status: 'completed',
-        duration: transcription.duration,
-        segmentCount: finalSegments.length
+        duration: result.duration,
+        segmentCount: result.segments.length,
+        speakerCount: result.speakers.length
       })
 
       return {
         id: transcriptionRecord.id,
-        ...transcription,
-        segments: finalSegments
+        segments: result.segments,
+        language: result.language,
+        duration: result.duration,
+        speakers: result.speakers
       }
     } catch (error) {
-      console.error('[Main] Transcription failed:', error)
+      console.error('[Main] WhisperX transcription failed:', error)
+
+      // Update database with error status
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      db.updateTranscription(transcriptionRecord.id, {
+        status: 'failed',
+        error: errorMessage
+      })
+
+      // Send error event
+      event.sender.send('transcribe:failed', {
+        id: transcriptionRecord.id,
+        status: 'failed',
+        error: errorMessage
+      })
+
+      throw error
+    }
+  }
+)
+
+// Alias for transcribe:whisperx (used by renderer's whisperx API)
+ipcMain.handle(
+  'transcribe:whisperx',
+  async (
+    event,
+    filePath: string,
+    options?: {
+      language?: string
+      modelSize?: string
+      enableDiarization?: boolean
+      numSpeakers?: number
+      projectId?: string
+    }
+  ) => {
+    // This is the same as transcribe:start - WhisperX is now the only engine
+    const whisperX = getWhisperXTranscriberService()
+    const db = getDatabaseService()
+
+    // Get file info
+    const path = await import('path')
+    const fs = await import('fs')
+    const fileName = path.basename(filePath)
+    let fileSize: number | undefined
+
+    try {
+      const stats = fs.statSync(filePath)
+      fileSize = stats.size
+    } catch {
+      // File size is optional
+    }
+
+    // Create transcription record in database (pending status)
+    const transcriptionRecord = await db.createTranscription({
+      filePath,
+      fileName,
+      fileSize,
+      projectId: options?.projectId,
+      language: options?.language,
+      modelUsed: `whisperx-${options?.modelSize || 'base'}`
+    })
+
+    // Send the transcription ID immediately so UI can track it
+    event.sender.send('transcribe:created', {
+      id: transcriptionRecord.id,
+      fileName,
+      status: 'pending'
+    })
+
+    try {
+      // Update status to processing
+      db.updateTranscription(transcriptionRecord.id, { status: 'processing' })
+      event.sender.send('transcribe:status', {
+        id: transcriptionRecord.id,
+        status: 'processing'
+      })
+
+      // Send progress updates to renderer
+      const sendProgress = (progress: { percent: number; stage: string; message?: string }) => {
+        event.sender.send('transcribe:progress', {
+          id: transcriptionRecord.id,
+          percent: progress.percent,
+          currentTime: 0,
+          totalTime: 0,
+          stage: progress.stage,
+          stageLabel: progress.message || progress.stage
+        })
+      }
+
+      // Transcribe with WhisperX (includes word-level timestamps and optional diarization)
+      console.log('[Main] Starting WhisperX transcription...')
+      const result = await whisperX.transcribe(filePath, {
+        language: options?.language,
+        modelSize: (options?.modelSize || 'base') as 'tiny' | 'base' | 'small' | 'medium' | 'large',
+        enableDiarization: options?.enableDiarization ?? true,
+        numSpeakers: options?.numSpeakers,
+        onProgress: sendProgress
+      })
+
+      console.log('[Main] WhisperX transcription complete:', {
+        segmentCount: result.segments.length,
+        language: result.language,
+        duration: result.duration,
+        speakerCount: result.speakers.length
+      })
+
+      // Format segments for database (WhisperX already has speaker labels)
+      const segmentsData = result.segments.map((seg) => ({
+        speakerId: seg.speaker || undefined,
+        startTime: seg.start,
+        endTime: seg.end,
+        text: seg.text
+      }))
+
+      // Save segments to database
+      db.saveSegments(transcriptionRecord.id, segmentsData)
+
+      // Save speakers if diarization was enabled
+      if (result.speakers.length > 0) {
+        const speakersData = result.speakers.map((speakerId, index) => ({
+          speakerId,
+          displayName: `Speaker ${index + 1}`
+        }))
+        console.log('[Main] Saving speakers:', speakersData)
+        await db.saveSpeakers(transcriptionRecord.id, speakersData)
+      }
+
+      // Update transcription record with completion info
+      const completedAt = new Date().toISOString()
+      db.updateTranscription(transcriptionRecord.id, {
+        status: 'completed',
+        duration: result.duration,
+        language: result.language,
+        completedAt
+      })
+
+      // Send completion event
+      event.sender.send('transcribe:completed', {
+        id: transcriptionRecord.id,
+        status: 'completed',
+        duration: result.duration,
+        segmentCount: result.segments.length,
+        speakerCount: result.speakers.length
+      })
+
+      return {
+        id: transcriptionRecord.id,
+        segments: result.segments,
+        language: result.language,
+        duration: result.duration,
+        speakers: result.speakers
+      }
+    } catch (error) {
+      console.error('[Main] WhisperX transcription failed:', error)
 
       // Update database with error status
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
@@ -334,12 +454,11 @@ ipcMain.handle(
 
 // Cancel transcription
 ipcMain.handle('transcribe:cancel', async (event, transcriptionId: string) => {
-  const transcriber = getTranscriberService()
+  const whisperX = getWhisperXTranscriberService()
   const db = getDatabaseService()
 
   try {
-    // Kill the worker process if it's running
-    transcriber.cancelCurrentTranscription()
+    whisperX.cancelCurrentTranscription()
 
     // Update database status to cancelled
     db.updateTranscription(transcriptionId, { status: 'cancelled' })
@@ -354,55 +473,25 @@ ipcMain.handle('transcribe:cancel', async (event, transcriptionId: string) => {
   }
 })
 
-// ============ Diarization IPC Handlers ============
-
-ipcMain.handle('diarize:start', async (event, filePath: string) => {
-  const diarizer = getDiarizerService()
-
-  try {
-    const sendProgress = (progress: { percent: number; stage: string }) => {
-      event.sender.send('diarize:progress', progress)
-    }
-
-    const result = await diarizer.diarize(filePath, {
-      onProgress: sendProgress
-    })
-
-    return result
-  } catch (error) {
-    console.error('[Main] Diarization failed:', error)
-    throw error
-  }
+// Get available WhisperX models
+ipcMain.handle('whisperx:getModels', () => {
+  const whisperX = getWhisperXTranscriberService()
+  return whisperX.getAvailableModels()
 })
 
-// ============ Model Management IPC Handlers ============
-
-ipcMain.handle('models:getDirectory', () => {
-  const transcriber = getTranscriberService()
-  return transcriber.getModelDirectory()
+// Check WhisperX model status
+ipcMain.handle('whisperx:isReady', () => {
+  const whisperX = getWhisperXTranscriberService()
+  return whisperX.isModelLoaded()
 })
 
-ipcMain.handle('models:getAvailable', () => {
-  const transcriber = getTranscriberService()
-  return transcriber.getAvailableModels()
-})
-
-ipcMain.handle('models:load', async (_event, modelName: string) => {
-  const transcriber = getTranscriberService()
-  return transcriber.loadModel(modelName)
-})
-
-ipcMain.handle('models:isReady', () => {
-  const transcriber = getTranscriberService()
-  return transcriber.isModelLoaded()
-})
-
-ipcMain.handle('models:download', async (event, modelName: string) => {
-  const transcriber = getTranscriberService()
-  return transcriber.downloadModel(modelName as 'tiny.en' | 'tiny' | 'base.en' | 'base' | 'small.en' | 'small', (progress) => {
-    // Send progress updates to renderer
-    event.sender.send('models:downloadProgress', { modelName, ...progress })
-  })
+// Load WhisperX model
+ipcMain.handle('whisperx:loadModel', async (_event, modelSize: string, language?: string) => {
+  const whisperX = getWhisperXTranscriberService()
+  return whisperX.loadModel(
+    modelSize as 'tiny' | 'base' | 'small' | 'medium' | 'large',
+    language
+  )
 })
 
 // ============ Database IPC Handlers ============
@@ -467,6 +556,22 @@ ipcMain.handle('db:transcriptions:recent', (_event, limit?: number) => {
 ipcMain.handle('db:transcriptions:search', (_event, query: string, limit?: number) => {
   const db = getDatabaseService()
   return db.searchTranscriptions(query, limit)
+})
+
+// Queue (Pending Transcriptions)
+ipcMain.handle('db:transcriptions:createPending', async (_event, data: CreatePendingTranscriptionData) => {
+  const db = getDatabaseService()
+  return await db.createPendingTranscription(data)
+})
+
+ipcMain.handle('db:transcriptions:getPending', () => {
+  const db = getDatabaseService()
+  return db.getPendingTranscriptions()
+})
+
+ipcMain.handle('db:transcriptions:recoverInterrupted', () => {
+  const db = getDatabaseService()
+  return db.recoverInterruptedTranscriptions()
 })
 
 // Segments
@@ -639,6 +744,70 @@ ipcMain.handle(
   }
 )
 
+// Export entire project (all transcriptions)
+ipcMain.handle(
+  'export:project',
+  async (
+    _event,
+    projectId: string,
+    format: ExportFormat
+  ): Promise<{ exportDir: string; count: number } | null> => {
+    const db = getDatabaseService()
+    const exporter = getExporterService()
+
+    // Get project
+    const project = db.getProject(projectId)
+    if (!project) {
+      throw new Error('Project not found')
+    }
+
+    // Get all completed transcriptions in the project
+    const transcriptions = db.getTranscriptions({ projectId, status: 'completed' })
+    if (transcriptions.length === 0) {
+      throw new Error('No completed transcriptions in project')
+    }
+
+    // Show directory picker dialog
+    const { filePaths, canceled } = await dialog.showOpenDialog({
+      title: `Select folder to export ${transcriptions.length} transcription(s)`,
+      properties: ['openDirectory', 'createDirectory']
+    })
+
+    if (canceled || !filePaths[0]) {
+      return null
+    }
+
+    const exportDir = filePaths[0]
+    const exportedFiles: string[] = []
+    const fs = await import('fs')
+    const path = await import('path')
+
+    for (const transcription of transcriptions) {
+      const segments = db.getSegments(transcription.id)
+      const speakers = db.getSpeakers(transcription.id)
+
+      // Export
+      const result = await exporter.export(format, transcription, segments, speakers)
+
+      // Generate filename
+      const baseName = transcription.fileName.replace(/\.[^/.]+$/, '')
+      const filename = `${baseName}.${result.extension}`
+      const filePath = path.join(exportDir, filename)
+
+      // Write file
+      if (result.content instanceof Buffer) {
+        fs.writeFileSync(filePath, result.content)
+      } else {
+        fs.writeFileSync(filePath, result.content, 'utf-8')
+      }
+
+      exportedFiles.push(filePath)
+    }
+
+    return { exportDir, count: exportedFiles.length }
+  }
+)
+
 // ============ App Lifecycle ============
 
 app.whenReady().then(() => {
@@ -649,6 +818,12 @@ app.whenReady().then(() => {
   console.log('[Main] Initializing database...')
   const db = getDatabaseService()
   console.log(`[Main] Database initialized at: ${db.getDbPath()}`)
+
+  // Recover any interrupted transcriptions (mark as failed)
+  const recoveredCount = db.recoverInterruptedTranscriptions()
+  if (recoveredCount > 0) {
+    console.log(`[Main] Recovered ${recoveredCount} interrupted transcription(s)`)
+  }
 
   // Default open or close DevTools by F12 in development
   app.on('browser-window-created', (_, window) => {

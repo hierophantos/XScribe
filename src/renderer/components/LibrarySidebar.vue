@@ -2,9 +2,11 @@
 import { ref, computed } from 'vue'
 import { useLibraryStore } from '../stores/library'
 import { useUIStore } from '../stores/ui'
+import { useTranscriptionStore } from '../stores/transcription'
 
 const libraryStore = useLibraryStore()
 const uiStore = useUIStore()
+const transcriptionStore = useTranscriptionStore()
 
 const searchInput = ref('')
 const showProjects = ref(true)
@@ -15,6 +17,13 @@ const displayedTranscriptions = computed(() => {
     return libraryStore.searchResults.map((r) => r.transcription)
   }
   return libraryStore.recentTranscriptions
+})
+
+// Pending items that are NOT currently being processed (those show in Processing section)
+const waitingPendingItems = computed(() => {
+  return transcriptionStore.pendingQueue.filter(
+    item => item.id !== transcriptionStore.currentProcessingId
+  )
 })
 
 function handleSearch() {
@@ -79,7 +88,15 @@ async function cancelTranscription(transcriptionId: string) {
   }
 }
 
-// Context menu state
+async function cancelPendingItem(id: string) {
+  try {
+    await transcriptionStore.removeFromQueue(id)
+  } catch (err) {
+    console.error('Failed to cancel pending item:', err)
+  }
+}
+
+// Context menu state for transcriptions
 interface Transcription {
   id: string
   fileName: string
@@ -94,6 +111,23 @@ const contextMenu = ref({
   x: 0,
   y: 0,
   transcriptionId: null as string | null
+})
+
+// Context menu state for projects
+const projectContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  projectId: null as string | null
+})
+
+// Context menu state for pending items
+const pendingContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  pendingId: null as string | null, // null means header was right-clicked (show only "Cancel All")
+  isCurrentlyProcessing: false
 })
 
 function showContextMenu(event: MouseEvent, transcription: Transcription) {
@@ -125,11 +159,98 @@ async function deleteTranscription() {
   hideContextMenu()
 }
 
-defineEmits<{
+// Project context menu functions
+function showProjectContextMenu(event: MouseEvent, projectId: string) {
+  event.preventDefault()
+  projectContextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    projectId
+  }
+}
+
+function hideProjectContextMenu() {
+  projectContextMenu.value.visible = false
+  projectContextMenu.value.projectId = null
+}
+
+function editProject() {
+  if (!projectContextMenu.value.projectId) return
+  uiStore.openModal('editProject', { projectId: projectContextMenu.value.projectId })
+  hideProjectContextMenu()
+}
+
+async function exportProjectAs(format: string) {
+  if (!projectContextMenu.value.projectId) return
+
+  try {
+    const result = await window.electronAPI.export.project(
+      projectContextMenu.value.projectId,
+      format
+    )
+    if (result) {
+      uiStore.showSuccess(`Exported ${result.count} files to folder`)
+    }
+  } catch (err) {
+    uiStore.showError(err instanceof Error ? err.message : 'Export failed')
+  }
+  hideProjectContextMenu()
+}
+
+// Pending context menu functions
+function showPendingContextMenu(event: MouseEvent, pendingId: string | null = null, isCurrentlyProcessing: boolean = false) {
+  event.preventDefault()
+  pendingContextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    pendingId,
+    isCurrentlyProcessing
+  }
+}
+
+function hidePendingContextMenu() {
+  pendingContextMenu.value.visible = false
+  pendingContextMenu.value.pendingId = null
+  pendingContextMenu.value.isCurrentlyProcessing = false
+}
+
+async function cancelPendingFromMenu() {
+  if (!pendingContextMenu.value.pendingId) return
+  try {
+    await transcriptionStore.removeFromQueue(pendingContextMenu.value.pendingId)
+  } catch (err) {
+    console.error('Failed to cancel pending item:', err)
+  }
+  hidePendingContextMenu()
+}
+
+async function cancelAllPending() {
+  try {
+    await transcriptionStore.clearQueue()
+  } catch (err) {
+    console.error('Failed to cancel all pending:', err)
+  }
+  hidePendingContextMenu()
+}
+
+const emit = defineEmits<{
   (e: 'select-transcription', id: string): void
   (e: 'select-processing', id: string): void
   (e: 'new-transcription'): void
 }>()
+
+// Select a transcription, preserving search context if searching
+function selectTranscription(transcriptionId: string) {
+  // Save search context if we're currently searching
+  if (searchInput.value.trim()) {
+    uiStore.setSearchContext(searchInput.value.trim())
+  } else {
+    uiStore.clearSearchContext()
+  }
+  emit('select-transcription', transcriptionId)
+}
 </script>
 
 <template>
@@ -139,7 +260,7 @@ defineEmits<{
       <input
         v-model="searchInput"
         type="text"
-        placeholder="Search transcripts..."
+        :placeholder="libraryStore.selectedProject ? `Search in ${libraryStore.selectedProject.name}...` : 'Search transcripts...'"
         class="search-input"
         @input="handleSearch"
       />
@@ -204,6 +325,7 @@ defineEmits<{
           class="project-item"
           :class="{ active: libraryStore.selectedProjectId === project.id }"
           @click="selectProject(project.id)"
+          @contextmenu="showProjectContextMenu($event, project.id)"
         >
           <span
             class="project-dot"
@@ -221,8 +343,54 @@ defineEmits<{
       </div>
     </div>
 
-    <!-- Recent Section -->
-    <div class="section">
+    <!-- Project Transcriptions Section (when a project is selected) -->
+    <div v-if="libraryStore.selectedProjectId" class="section">
+      <button class="section-header" @click="showRecent = !showRecent">
+        <svg
+          class="chevron"
+          :class="{ collapsed: !showRecent }"
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+        <span>{{ searchInput ? 'Search Results' : libraryStore.selectedProject?.name || 'Project' }}</span>
+        <span class="count">{{ searchInput ? displayedTranscriptions.length : libraryStore.projectTranscriptions.length }}</span>
+      </button>
+
+      <div v-show="showRecent" class="section-content transcription-list">
+        <div v-if="searchInput ? displayedTranscriptions.length === 0 : libraryStore.projectTranscriptions.length === 0" class="empty-list">
+          {{ searchInput ? 'No results found' : 'No transcriptions in this project' }}
+        </div>
+
+        <button
+          v-for="transcription in (searchInput ? displayedTranscriptions : libraryStore.projectTranscriptions)"
+          :key="transcription.id"
+          class="transcription-item"
+          @click="selectTranscription(transcription.id)"
+          @contextmenu="showContextMenu($event, transcription)"
+        >
+          <div class="transcription-info">
+            <span class="transcription-name">{{ transcription.fileName }}</span>
+            <span class="transcription-meta">
+              <span class="status-icon" :class="transcription.status">
+                {{ getStatusIcon(transcription.status) }}
+              </span>
+              <span>{{ formatDuration(transcription.duration) }}</span>
+              <span class="separator">·</span>
+              <span>{{ formatDate(transcription.completedAt || transcription.createdAt) }}</span>
+            </span>
+          </div>
+        </button>
+      </div>
+    </div>
+
+    <!-- Recent Section (when no project selected) -->
+    <div v-else class="section">
       <button class="section-header" @click="showRecent = !showRecent">
         <svg
           class="chevron"
@@ -249,7 +417,7 @@ defineEmits<{
           v-for="transcription in displayedTranscriptions"
           :key="transcription.id"
           class="transcription-item"
-          @click="$emit('select-transcription', transcription.id)"
+          @click="selectTranscription(transcription.id)"
           @contextmenu="showContextMenu($event, transcription)"
         >
           <div class="transcription-info">
@@ -304,6 +472,41 @@ defineEmits<{
       </div>
     </div>
 
+    <!-- Pending Queue Section (shows items waiting to be processed, not the current one) -->
+    <div v-if="waitingPendingItems.length > 0" class="section">
+      <div class="section-header" @contextmenu="showPendingContextMenu($event, null)">
+        <span class="pending-indicator"></span>
+        <span>Pending</span>
+        <span class="count">{{ waitingPendingItems.length }}</span>
+      </div>
+
+      <div class="section-content pending-list">
+        <div
+          v-for="item in waitingPendingItems"
+          :key="item.id"
+          class="pending-item"
+          @contextmenu="showPendingContextMenu($event, item.id, false)"
+        >
+          <div class="pending-info">
+            <span class="pending-name">{{ item.fileName }}</span>
+            <span class="pending-meta">
+              <span v-if="item.duration" class="pending-duration">{{ formatDuration(item.duration) }}</span>
+              <span class="pending-model">{{ item.queueModel }}</span>
+            </span>
+          </div>
+          <button
+            class="cancel-btn"
+            title="Remove from queue"
+            @click.stop="cancelPendingItem(item.id)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Footer -->
     <div class="sidebar-footer">
       <button class="settings-btn" @click="uiStore.openModal('settings')">
@@ -316,7 +519,7 @@ defineEmits<{
       </button>
     </div>
 
-    <!-- Context Menu -->
+    <!-- Transcription Context Menu -->
     <Teleport to="body">
       <div
         v-if="contextMenu.visible"
@@ -332,6 +535,67 @@ defineEmits<{
         v-if="contextMenu.visible"
         class="context-menu-overlay"
         @click="hideContextMenu"
+      />
+    </Teleport>
+
+    <!-- Project Context Menu -->
+    <Teleport to="body">
+      <div
+        v-if="projectContextMenu.visible"
+        class="context-menu"
+        :style="{ top: projectContextMenu.y + 'px', left: projectContextMenu.x + 'px' }"
+        @click.stop
+      >
+        <button class="context-menu-item" @click="editProject">
+          ✏️ Edit Project
+        </button>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-submenu">
+          <button class="context-menu-item has-submenu">
+            📥 Export Project
+            <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </button>
+          <div class="submenu">
+            <button class="context-menu-item" @click="exportProjectAs('txt')">Plain Text (.txt)</button>
+            <button class="context-menu-item" @click="exportProjectAs('srt')">SRT Subtitles (.srt)</button>
+            <button class="context-menu-item" @click="exportProjectAs('vtt')">WebVTT (.vtt)</button>
+            <button class="context-menu-item" @click="exportProjectAs('json')">JSON (.json)</button>
+            <button class="context-menu-item" @click="exportProjectAs('docx')">Word Document (.docx)</button>
+          </div>
+        </div>
+      </div>
+      <div
+        v-if="projectContextMenu.visible"
+        class="context-menu-overlay"
+        @click="hideProjectContextMenu"
+      />
+    </Teleport>
+
+    <!-- Pending Context Menu -->
+    <Teleport to="body">
+      <div
+        v-if="pendingContextMenu.visible"
+        class="context-menu"
+        :style="{ top: pendingContextMenu.y + 'px', left: pendingContextMenu.x + 'px' }"
+        @click.stop
+      >
+        <button
+          v-if="pendingContextMenu.pendingId && !pendingContextMenu.isCurrentlyProcessing"
+          class="context-menu-item danger"
+          @click="cancelPendingFromMenu"
+        >
+          ❌ Cancel Transcript
+        </button>
+        <button class="context-menu-item danger" @click="cancelAllPending">
+          🗑️ Cancel All Pending
+        </button>
+      </div>
+      <div
+        v-if="pendingContextMenu.visible"
+        class="context-menu-overlay"
+        @click="hidePendingContextMenu"
       />
     </Teleport>
   </aside>
@@ -743,5 +1007,115 @@ defineEmits<{
   position: fixed;
   inset: 0;
   z-index: 10000;
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 4px 0;
+}
+
+.context-menu-submenu {
+  position: relative;
+}
+
+.context-menu-item.has-submenu {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.context-menu-item.has-submenu .chevron {
+  opacity: 0.5;
+}
+
+.context-menu-submenu .submenu {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  min-width: 180px;
+  padding: 4px;
+  z-index: 10002;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.context-menu-submenu:hover .submenu {
+  display: block;
+}
+
+/* Pending Queue Styles */
+.pending-indicator {
+  width: 8px;
+  height: 8px;
+  background: var(--text-muted);
+  border-radius: 50%;
+}
+
+.pending-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.pending-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  margin-bottom: 0.25rem;
+}
+
+.pending-item.is-current {
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.pending-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.pending-name {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+}
+
+.pending-duration {
+  font-family: var(--font-mono);
+}
+
+.pending-model {
+  background: var(--bg-secondary);
+  padding: 0.0625rem 0.25rem;
+  border-radius: 3px;
+}
+
+.pending-item .cancel-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.pending-item .cancel-btn:disabled:hover {
+  color: var(--text-muted);
+  background: none;
 }
 </style>

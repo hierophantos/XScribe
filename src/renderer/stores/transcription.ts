@@ -35,11 +35,42 @@ interface TranscriptionProgress {
   percent: number
   currentTime: number
   totalTime: number
-  stage?: 'transcribing' | 'diarizing'
+  stage?: 'downloading' | 'transcribing' | 'aligning' | 'diarizing' | 'assigning' | 'processing' | 'formatting' | 'complete'
   stageLabel?: string
 }
 
 type TranscriptionStatus = 'idle' | 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
+
+// Pending transcription from database
+interface PendingTranscription {
+  id: string
+  filePath: string
+  fileName: string
+  projectId: string | null
+  queueModel: string | null
+  queueDiarization: boolean | null
+  duration: number | null
+}
+
+// Full transcription metadata
+interface Transcription {
+  id: string
+  projectId: string | null
+  filePath: string
+  fileName: string
+  fileSize: number | null
+  duration: number | null
+  language: string | null
+  modelUsed: string | null
+  status: string
+  error: string | null
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
+  queueModel: string | null
+  queueDiarization: boolean | null
+  segmentCount?: number
+}
 
 export const useTranscriptionStore = defineStore('transcription', () => {
   // State
@@ -50,6 +81,14 @@ export const useTranscriptionStore = defineStore('transcription', () => {
   const progress = ref<TranscriptionProgress | null>(null)
   const error = ref<string | null>(null)
   const isLoading = ref(false)
+
+  // Queue state for batch processing (persisted in database)
+  const pendingQueue = ref<PendingTranscription[]>([])
+  const isProcessingQueue = ref(false)
+  const currentProcessingId = ref<string | null>(null)
+
+  // Full transcription metadata (for display in TranscriptionView)
+  const activeTranscription = ref<Transcription | null>(null)
 
   // Computed
   const speakerMap = computed(() => {
@@ -84,6 +123,13 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     return Math.max(...segments.value.map((s) => s.endTime))
   })
 
+  // Get the filename of the currently processing item
+  const currentProcessingFileName = computed(() => {
+    if (!currentProcessingId.value) return null
+    const item = pendingQueue.value.find(i => i.id === currentProcessingId.value)
+    return item?.fileName || null
+  })
+
   // Actions
   async function loadTranscription(id: string) {
     isLoading.value = true
@@ -91,11 +137,13 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     activeTranscriptionId.value = id
 
     try {
-      const [segmentsList, speakersList] = await Promise.all([
+      const [transcription, segmentsList, speakersList] = await Promise.all([
+        window.electronAPI.db.transcriptions.get(id),
         window.electronAPI.db.segments.get(id),
         window.electronAPI.db.speakers.get(id)
       ])
 
+      activeTranscription.value = transcription
       segments.value = segmentsList
       speakers.value = speakersList
       status.value = 'completed'
@@ -110,6 +158,7 @@ export const useTranscriptionStore = defineStore('transcription', () => {
 
   function clearTranscription() {
     activeTranscriptionId.value = null
+    activeTranscription.value = null
     segments.value = []
     speakers.value = []
     status.value = 'idle'
@@ -144,8 +193,23 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     progress.value = null
   }
 
+  // Track previous stage to detect transitions
+  const previousStage = ref<string | null>(null)
+
   function onTranscriptionProgress(data: TranscriptionProgress) {
     if (data.id === activeTranscriptionId.value) {
+      // Detect transition from downloading to transcription stages
+      // When this happens, reset the progress to show transcription starting fresh
+      const currentStage = data.stage
+      const wasDownloading = previousStage.value === 'downloading'
+      const isNowTranscribing = currentStage && currentStage !== 'downloading' && currentStage !== 'complete'
+
+      if (wasDownloading && isNowTranscribing) {
+        // Transitioning from download to transcription - the new percent is for transcription
+        // No adjustment needed, just let the new progress flow through
+      }
+
+      previousStage.value = currentStage || null
       progress.value = data
       status.value = 'processing'
     }
@@ -247,7 +311,7 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     return true
   }
 
-  // Start a new transcription
+  // Start a new transcription using WhisperX
   async function startTranscription(
     filePath: string,
     options?: {
@@ -265,9 +329,14 @@ export const useTranscriptionStore = defineStore('transcription', () => {
       // Check for ffmpeg if needed for this file type
       await ensureFFmpegForFile(filePath)
 
-      const result = await window.electronAPI.transcribe.start(filePath, options)
+      // Use WhisperX for transcription with word-level timestamps
+      const result = await window.electronAPI.whisperx.transcribe(filePath, {
+        language: options?.language,
+        modelSize: options?.model,
+        enableDiarization: options?.useDiarization ?? true,
+        projectId: options?.projectId
+      })
 
-      // The result contains the transcription ID and segments
       activeTranscriptionId.value = result.id
 
       // Convert the result segments to our format
@@ -303,15 +372,162 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     error.value = null
   }
 
+  /**
+   * Load pending queue from database
+   */
+  async function loadPendingQueue() {
+    try {
+      const pending = await window.electronAPI.db.transcriptions.getPending()
+      pendingQueue.value = pending.map(t => ({
+        id: t.id,
+        filePath: t.filePath,
+        fileName: t.fileName,
+        projectId: t.projectId,
+        queueModel: t.queueModel,
+        queueDiarization: t.queueDiarization,
+        duration: t.duration
+      }))
+    } catch (err) {
+      console.error('[TranscriptionStore] Failed to load pending queue:', err)
+    }
+  }
+
+  /**
+   * Add a file to the transcription queue (persisted in database)
+   */
+  async function queueTranscription(
+    filePath: string,
+    fileName: string,
+    options: {
+      projectId?: string
+      model?: string
+      useDiarization?: boolean
+      fileSize?: number
+      duration?: number
+    } = {}
+  ) {
+    try {
+      const pendingRecord = await window.electronAPI.db.transcriptions.createPending({
+        filePath,
+        fileName,
+        fileSize: options.fileSize,
+        projectId: options.projectId,
+        duration: options.duration,
+        queueModel: options.model || 'base.en',
+        queueDiarization: options.useDiarization ?? true
+      })
+
+      // Add to local state
+      pendingQueue.value.push({
+        id: pendingRecord.id,
+        filePath: pendingRecord.filePath,
+        fileName: pendingRecord.fileName,
+        projectId: pendingRecord.projectId,
+        queueModel: pendingRecord.queueModel,
+        queueDiarization: pendingRecord.queueDiarization,
+        duration: pendingRecord.duration
+      })
+
+      return pendingRecord
+    } catch (err) {
+      console.error('[TranscriptionStore] Failed to queue transcription:', err)
+      throw err
+    }
+  }
+
+  /**
+   * Process the transcription queue sequentially
+   * Called on app startup and after adding items to queue
+   */
+  async function processQueue() {
+    if (isProcessingQueue.value) {
+      return
+    }
+
+    // Reload queue from database to get latest state
+    await loadPendingQueue()
+
+    if (pendingQueue.value.length === 0) {
+      return
+    }
+
+    isProcessingQueue.value = true
+
+    while (pendingQueue.value.length > 0) {
+      const item = pendingQueue.value[0]
+      currentProcessingId.value = item.id
+
+      try {
+        // Check for ffmpeg if needed
+        await ensureFFmpegForFile(item.filePath)
+
+        // Start transcription - this updates status to 'processing' in DB via IPC
+        await window.electronAPI.whisperx.transcribe(item.filePath, {
+          modelSize: item.queueModel || 'base.en',
+          enableDiarization: item.queueDiarization ?? true,
+          projectId: item.projectId || undefined
+        })
+      } catch (err) {
+        console.error('[TranscriptionStore] Queue item failed:', item.filePath, err)
+        // The IPC handler will update the status to 'failed' in DB
+      }
+
+      // Remove from local queue (status is already updated in DB by IPC)
+      pendingQueue.value.shift()
+      currentProcessingId.value = null
+    }
+
+    isProcessingQueue.value = false
+  }
+
+  /**
+   * Remove a specific item from the queue by ID
+   */
+  async function removeFromQueue(id: string) {
+    try {
+      // Delete from database
+      await window.electronAPI.db.transcriptions.delete(id)
+
+      // Remove from local state
+      const index = pendingQueue.value.findIndex(item => item.id === id)
+      if (index !== -1) {
+        pendingQueue.value.splice(index, 1)
+      }
+    } catch (err) {
+      console.error('[TranscriptionStore] Failed to remove from queue:', err)
+      throw err
+    }
+  }
+
+  /**
+   * Clear all pending items from the queue
+   */
+  async function clearQueue() {
+    try {
+      // Delete all pending items from database
+      for (const item of pendingQueue.value) {
+        await window.electronAPI.db.transcriptions.delete(item.id)
+      }
+      pendingQueue.value = []
+    } catch (err) {
+      console.error('[TranscriptionStore] Failed to clear queue:', err)
+      throw err
+    }
+  }
+
   return {
     // State
     activeTranscriptionId,
+    activeTranscription,
     segments,
     speakers,
     status,
     progress,
     error,
     isLoading,
+    pendingQueue,
+    isProcessingQueue,
+    currentProcessingId,
 
     // Computed
     speakerMap,
@@ -319,6 +535,7 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     uniqueSpeakers,
     fullText,
     totalDuration,
+    currentProcessingFileName,
 
     // Actions
     loadTranscription,
@@ -326,6 +543,11 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     renameSpeaker,
     startTranscription,
     viewProcessingTranscription,
+    loadPendingQueue,
+    queueTranscription,
+    processQueue,
+    clearQueue,
+    removeFromQueue,
 
     // Event handlers
     onTranscriptionCreated,
