@@ -38,14 +38,14 @@ extraResources:
   # - Diarization models: sherpa-onnx (~50MB)
 
 mac:
+  # ARM64 only - Intel Macs can run via Rosetta 2
+  # PyTorch 2.8+ is not available for x86_64 macOS
   target:
     - target: dmg
       arch:
-        - x64
         - arm64
     - target: zip
       arch:
-        - x64
         - arm64
   category: public.app-category.productivity
   hardenedRuntime: true
@@ -71,15 +71,14 @@ nsis:
   deleteAppDataOnUninstall: false
 
 linux:
+  # x64 only for now - arm64 can be added when we build linux-arm64 venv
   target:
     - target: AppImage
       arch:
         - x64
-        - arm64
     - target: deb
       arch:
         - x64
-        - arm64
   category: AudioVideo
   maintainer: xscribe
 

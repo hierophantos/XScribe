@@ -17,11 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS builds - need separate jobs for x64 and arm64
-          - os: macos-15        # Intel runner
-            platform: mac
-            arch: x64
-            venv: darwin-x64
+          # macOS ARM64 only - Intel Macs can run via Rosetta 2
+          # NOTE: darwin-x64 removed - PyTorch 2.8+ not available for Intel Macs
           - os: macos-14        # M1 runner
             platform: mac
             arch: arm64
