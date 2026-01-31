@@ -19,6 +19,19 @@ Write-Host "=== Building Python venv for $Platform ===" -ForegroundColor Cyan
 # Windows Python download URL
 $PYTHON_URL = "https://github.com/indygreg/python-build-standalone/releases/download/${PYTHON_BUILD_DATE}/cpython-${PYTHON_VERSION}+${PYTHON_BUILD_DATE}-x86_64-pc-windows-msvc-install_only.tar.gz"
 
+# Save transcriber scripts before cleanup (since we'll delete the python/ dir)
+$TranscriberScript = "$ProjectRoot\python\transcriber.py"
+$DiarizerScript = "$ProjectRoot\python\sherpa_diarizer.py"
+
+if (-not (Test-Path $TranscriberScript)) {
+    Write-Host "Error: transcriber.py not found at $TranscriberScript" -ForegroundColor Red
+    exit 1
+}
+
+# Copy scripts to temp location
+Copy-Item $TranscriberScript -Destination "$env:TEMP\transcriber.py"
+Copy-Item $DiarizerScript -Destination "$env:TEMP\sherpa_diarizer.py"
+
 # Clean up any previous build
 if (Test-Path "python") { Remove-Item -Recurse -Force "python" }
 if (Test-Path "python.tar.gz") { Remove-Item -Force "python.tar.gz" }
@@ -45,36 +58,29 @@ Write-Host "=== Verifying Python installation ===" -ForegroundColor Green
 Write-Host "=== Upgrading pip ===" -ForegroundColor Green
 & $PYTHON_BIN -m pip install --upgrade pip
 
-# 4. Install CPU-only PyTorch
-Write-Host "=== Installing PyTorch (CPU-only) ===" -ForegroundColor Green
-& $PYTHON_BIN -m pip install --no-cache-dir `
-  --extra-index-url https://download.pytorch.org/whl/cpu `
-  'torch>=2.0.0,<2.6.0' `
-  'torchaudio>=2.0.0,<2.6.0'
-
-# 5. Install WhisperX from GitHub
+# 4. Install WhisperX from GitHub (will install its own PyTorch requirement)
 Write-Host "=== Installing WhisperX ===" -ForegroundColor Green
 & $PYTHON_BIN -m pip install --no-cache-dir `
   'git+https://github.com/m-bain/whisperX.git'
 
-# 6. Install pyannote.audio
+# 5. Install pyannote.audio
 Write-Host "=== Installing pyannote.audio ===" -ForegroundColor Green
 & $PYTHON_BIN -m pip install --no-cache-dir `
   'pyannote.audio>=3.1,<4.0'
 
-# 7. Install sherpa-onnx and audio deps
+# 6. Install sherpa-onnx and audio deps
 Write-Host "=== Installing sherpa-onnx and audio deps ===" -ForegroundColor Green
 & $PYTHON_BIN -m pip install --no-cache-dir `
   'sherpa-onnx>=1.10.0' `
   soundfile `
   av
 
-# 8. Copy transcriber scripts
+# 7. Copy transcriber scripts from temp location
 Write-Host "=== Copying transcriber scripts ===" -ForegroundColor Green
-Copy-Item "$ProjectRoot\python\transcriber.py" -Destination ".\python\"
-Copy-Item "$ProjectRoot\python\sherpa_diarizer.py" -Destination ".\python\"
+Copy-Item "$env:TEMP\transcriber.py" -Destination ".\python\"
+Copy-Item "$env:TEMP\sherpa_diarizer.py" -Destination ".\python\"
 
-# 9. Slim the venv (Windows version)
+# 8. Slim the venv (Windows version)
 Write-Host "=== Slimming venv ===" -ForegroundColor Green
 
 # Remove test directories
@@ -94,7 +100,7 @@ Get-ChildItem -Path ".\python" -File -Recurse -Filter "*.pyi" | Remove-Item -For
 # Remove CUDA-related files (we're CPU-only)
 Get-ChildItem -Path ".\python" -File -Recurse | Where-Object { $_.Name -match "cuda" } | Remove-Item -Force -ErrorAction SilentlyContinue
 
-# 10. Verify key imports work
+# 9. Verify key imports work
 Write-Host "=== Verifying installation ===" -ForegroundColor Green
 & $PYTHON_BIN -c @"
 import torch
@@ -106,12 +112,12 @@ print('sherpa-onnx imported successfully')
 print('All imports OK!')
 "@
 
-# 11. Show final size
+# 10. Show final size
 Write-Host "=== Venv size before compression ===" -ForegroundColor Green
 $size = (Get-ChildItem -Path ".\python" -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
 Write-Host "Size: $([math]::Round($size, 2)) MB"
 
-# 12. Package for upload
+# 11. Package for upload
 Write-Host "=== Creating archive ===" -ForegroundColor Green
 tar -czf "python-venv-${Platform}.tar.gz" python
 
