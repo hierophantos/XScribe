@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:  # Allow manual trigger
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -54,13 +57,33 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Release Assets
+      - name: List release artifacts
+        run: ls -la release/ || echo "No release directory"
+
+      - name: Upload macOS Release Assets
+        if: matrix.os == 'macos-latest'
         uses: softprops/action-gh-release@v1
         with:
           files: |
             release/*.dmg
             release/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows Release Assets
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
             release/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux Release Assets
+        if: matrix.os == 'ubuntu-latest'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
             release/*.AppImage
             release/*.deb
         env:
