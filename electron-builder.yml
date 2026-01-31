@@ -28,6 +28,10 @@ extraResources:
     to: models/
     filter:
       - "**/*"
+  - from: resources/pyannote/
+    to: pyannote/
+    filter:
+      - "**/*"
 
 mac:
   target:
