@@ -77,34 +77,43 @@ $PYTHON_BIN --version
 echo "=== Upgrading pip ==="
 $PYTHON_BIN -m pip install --upgrade pip
 
-# 4. Install WhisperX from GitHub (not on PyPI)
-# WhisperX will install its own PyTorch requirement
+# 4. Install PyTorch CPU-only for Linux (reduces ~4GB CUDA libraries)
+if [[ "$PLATFORM" == linux-* ]]; then
+  echo "=== Installing PyTorch (CPU-only for Linux) ==="
+  $PYTHON_BIN -m pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    'torch>=2.8.0' \
+    'torchaudio>=2.8.0'
+fi
+
+# 5. Install WhisperX from GitHub (not on PyPI)
+# On Linux, this will use the already-installed CPU PyTorch
 echo "=== Installing WhisperX ==="
 $PYTHON_BIN -m pip install --no-cache-dir \
   'git+https://github.com/m-bain/whisperX.git'
 
-# 5. Install pyannote.audio for diarization (must be <4.0)
+# 6. Install pyannote.audio for diarization (must be <4.0)
 echo "=== Installing pyannote.audio ==="
 $PYTHON_BIN -m pip install --no-cache-dir \
   'pyannote.audio>=3.1,<4.0'
 
-# 6. Install sherpa-onnx and audio dependencies
+# 7. Install sherpa-onnx and audio dependencies
 echo "=== Installing sherpa-onnx and audio deps ==="
 $PYTHON_BIN -m pip install --no-cache-dir \
   'sherpa-onnx>=1.10.0' \
   soundfile \
   av
 
-# 7. Copy transcriber scripts into the Python directory (from temp location)
+# 8. Copy transcriber scripts into the Python directory (from temp location)
 echo "=== Copying transcriber scripts ==="
 cp /tmp/transcriber.py ./python/
 cp /tmp/sherpa_diarizer.py ./python/
 
-# 8. Slim the venv (remove tests, docs, caches)
+# 9. Slim the venv (remove tests, docs, caches)
 echo "=== Slimming venv ==="
 "${SCRIPT_DIR}/slim-venv.sh" ./python
 
-# 9. Verify key imports work
+# 10. Verify key imports work
 echo "=== Verifying installation ==="
 $PYTHON_BIN -c "
 import torch
@@ -116,11 +125,11 @@ print('sherpa-onnx imported successfully')
 print('All imports OK!')
 "
 
-# 10. Show final size
+# 11. Show final size
 echo "=== Venv size before compression ==="
 du -sh ./python
 
-# 11. Package for upload
+# 12. Package for upload
 echo "=== Creating archive ==="
 tar -czf "python-venv-${PLATFORM}.tar.gz" python
 
