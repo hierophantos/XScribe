@@ -13,6 +13,7 @@ files:
   - node_modules/bindings/**/*
   - node_modules/file-uri-to-path/**/*
   - node_modules/ffmpeg-static/**/*
+  - node_modules/uuid/**/*
 
 asarUnpack:
   - resources/**
