@@ -61,8 +61,17 @@ def log(message):
 # =============================================================================
 try:
     from omegaconf import DictConfig, ListConfig, OmegaConf
+    from omegaconf.base import ContainerMetadata, Metadata
+    from omegaconf.nodes import ValueNode
     if hasattr(torch.serialization, 'add_safe_globals'):
-        torch.serialization.add_safe_globals([DictConfig, ListConfig, OmegaConf])
+        torch.serialization.add_safe_globals([
+            DictConfig,
+            ListConfig,
+            OmegaConf,
+            ContainerMetadata,
+            Metadata,
+            ValueNode,
+        ])
         log("Added omegaconf classes to PyTorch safe globals")
 except ImportError:
     pass  # omegaconf not installed, skip
