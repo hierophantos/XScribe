@@ -495,6 +495,19 @@ class WhisperXTranscriber:
             if sys.platform == 'win32' and audio_path.startswith('\\\\'):
                 log(f"WARNING: UNC network path detected. This may cause issues with ffmpeg.")
 
+            # Check if ffmpeg is available in PATH before attempting to load audio
+            import shutil
+            ffmpeg_path = shutil.which('ffmpeg')
+            if ffmpeg_path:
+                log(f"FFmpeg found at: {ffmpeg_path}")
+            else:
+                log("ERROR: FFmpeg not found in PATH")
+                return {
+                    "type": "error",
+                    "id": msg_id,
+                    "error": "FFmpeg not found. Please restart the app or ensure FFmpeg is installed."
+                }
+
             send_progress(msg_id, 5, "transcribing", "Loading audio file...")
 
             # Load audio with better error handling
@@ -502,6 +515,14 @@ class WhisperXTranscriber:
                 audio = whisperx.load_audio(audio_path)
             except Exception as audio_err:
                 log(f"Failed to load audio file: {audio_err}")
+                error_msg = str(audio_err)
+                # Provide more helpful error message
+                if "WinError 2" in error_msg or "No such file" in error_msg:
+                    return {
+                        "type": "error",
+                        "id": msg_id,
+                        "error": f"Failed to load audio: FFmpeg could not process the file. Error: {audio_err}"
+                    }
                 return {
                     "type": "error",
                     "id": msg_id,

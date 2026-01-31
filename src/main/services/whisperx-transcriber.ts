@@ -13,12 +13,13 @@
  */
 
 import { app } from 'electron'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { existsSync, readdirSync } from 'fs'
 import { spawn, ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { homedir } from 'os'
 import { getSetupService } from './setup-service'
+import { getFFmpegStatus } from './ffmpeg-installer'
 import { logger } from './logger'
 
 // Word-level timestamp data
@@ -214,15 +215,37 @@ export class WhisperXTranscriberService extends EventEmitter {
     const setupService = getSetupService()
     const pythonDir = setupService.getPythonDir()
 
+    // Get FFmpeg path and add its directory to PATH
+    // WhisperX calls ffmpeg via subprocess, so it needs to be in PATH
+    let ffmpegDir = ''
+    try {
+      const ffmpegStatus = await getFFmpegStatus()
+      if (ffmpegStatus.installed && ffmpegStatus.path) {
+        ffmpegDir = dirname(ffmpegStatus.path)
+        logger.log('WhisperX', 'FFmpeg found', { path: ffmpegStatus.path, dir: ffmpegDir })
+      } else {
+        logger.log('WhisperX', 'WARNING: FFmpeg not found, audio loading may fail')
+      }
+    } catch (err) {
+      logger.error('WhisperX', 'Failed to get FFmpeg status', err)
+    }
+
+    // Build PATH with FFmpeg directory (if found), Python directory, and system PATH
+    const pathSeparator = process.platform === 'win32' ? ';' : ':'
+    const pathComponents = [
+      ffmpegDir,
+      pythonDir,
+      process.platform === 'win32' ? `${pythonDir}\\Scripts` : join(pythonDir, 'bin'),
+      process.env.PATH || ''
+    ].filter(Boolean)
+
     const env = {
       ...process.env,
       PYTHONUNBUFFERED: '1',
-      PATH: process.platform === 'win32'
-        ? `${pythonDir};${pythonDir}\\Scripts;${process.env.PATH}`
-        : `${join(pythonDir, 'bin')}:${process.env.PATH}`
+      PATH: pathComponents.join(pathSeparator)
     }
 
-    logger.log('WhisperX', 'Starting Python process', { pythonPath, scriptPath })
+    logger.log('WhisperX', 'Starting Python process', { pythonPath, scriptPath, ffmpegDir })
 
     this.process = spawn(pythonPath, [scriptPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
