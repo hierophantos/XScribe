@@ -348,8 +348,8 @@ export class SetupService {
     await this.runPipCommand([
       'install',
       '--extra-index-url', 'https://download.pytorch.org/whl/cpu',
-      'torch>=2.0.0,<2.6.0',
-      'torchaudio>=2.0.0,<2.6.0'
+      'torch>=2.0.0',
+      'torchaudio>=2.0.0'
     ], (line) => {
       if (line.includes('Downloading') || line.includes('Installing')) {
         onProgress({

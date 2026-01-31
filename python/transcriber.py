@@ -45,9 +45,17 @@ import json
 import torch
 
 # =============================================================================
-# Note: Using PyTorch <2.6 to avoid weights_only=True default issue
-# PyTorch 2.6+ changed the default which breaks pyannote model loading
+# PyTorch 2.6+ changed torch.load default to weights_only=True for security.
+# pyannote.audio models use omegaconf which requires these safe globals.
+# This must be done BEFORE any model loading occurs.
 # =============================================================================
+try:
+    from omegaconf import DictConfig, ListConfig, OmegaConf
+    if hasattr(torch.serialization, 'add_safe_globals'):
+        torch.serialization.add_safe_globals([DictConfig, ListConfig, OmegaConf])
+        log("Added omegaconf classes to PyTorch safe globals")
+except ImportError:
+    pass  # omegaconf not installed, skip
 
 
 def get_device():
