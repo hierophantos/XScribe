@@ -443,18 +443,31 @@ export class TranscriberService extends EventEmitter {
       const result = (await this.sendToWorker({
         type: 'transcribe',
         filePath
-      })) as { text: string; duration: number; timestamps: number[] }
+      })) as {
+        text: string
+        duration: number
+        timestamps: number[]
+        segments?: Array<{ start: number; end: number; text: string }>
+      }
 
-      // Parse the result into segments
-      const segments: TranscriptionSegment[] = result.text.trim()
-        ? [
-            {
-              start: 0,
-              end: result.duration,
-              text: result.text.trim()
-            }
-          ]
-        : []
+      // Use segments from worker if available (chunked transcription)
+      // Otherwise fall back to single segment from full text
+      const segments: TranscriptionSegment[] =
+        result.segments && result.segments.length > 0
+          ? result.segments.map((seg) => ({
+              start: seg.start,
+              end: seg.end,
+              text: seg.text
+            }))
+          : result.text.trim()
+            ? [
+                {
+                  start: 0,
+                  end: result.duration,
+                  text: result.text.trim()
+                }
+              ]
+            : []
 
       return {
         segments,

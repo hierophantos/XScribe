@@ -178,6 +178,13 @@ function loadModel(msg) {
   }
 }
 
+// Whisper models in sherpa-onnx only support 30 seconds at a time
+const MAX_CHUNK_SECONDS = 30;
+const OVERLAP_SECONDS = 1; // Slight overlap to avoid cutting words
+
+/**
+ * Transcribe audio in chunks to handle files longer than 30 seconds
+ */
 function transcribe(msg) {
   const { filePath, id } = msg;
   let wavInfo = null;
@@ -198,52 +205,124 @@ function transcribe(msg) {
       wavInfo = { wavPath: filePath, needsCleanup: false };
     }
 
-    send({ type: 'progress', percent: 20, stage: 'reading', id });
+    send({ type: 'progress', percent: 15, stage: 'reading', id });
 
     // Read the audio file
     const waveData = sherpa.readWave(wavInfo.wavPath);
-    const totalDuration = waveData.samples.length / waveData.sampleRate;
+    const sampleRate = waveData.sampleRate;
+    const samples = waveData.samples;
+    const totalSamples = samples.length;
+    const totalDuration = totalSamples / sampleRate;
 
-    send({ type: 'progress', percent: 30, stage: 'processing', id });
+    send({ type: 'progress', percent: 20, stage: 'processing', id });
 
-    // Create stream and process
-    const stream = recognizer.createStream();
-    stream.acceptWaveform({ sampleRate: waveData.sampleRate, samples: waveData.samples });
+    // Calculate chunking
+    const chunkSamples = MAX_CHUNK_SECONDS * sampleRate;
+    const overlapSamples = OVERLAP_SECONDS * sampleRate;
+    const stepSamples = chunkSamples - overlapSamples;
 
-    send({ type: 'progress', percent: 50, stage: 'decoding', id });
+    // For short audio (< 30s), process directly
+    if (totalDuration <= MAX_CHUNK_SECONDS) {
+      const stream = recognizer.createStream();
+      stream.acceptWaveform({ sampleRate, samples });
 
-    // Decode
-    recognizer.decode(stream);
+      send({ type: 'progress', percent: 50, stage: 'decoding', id });
+      recognizer.decode(stream);
 
-    send({ type: 'progress', percent: 90, stage: 'finalizing', id });
+      send({ type: 'progress', percent: 90, stage: 'finalizing', id });
+      const result = recognizer.getResult(stream);
 
-    // Get result
-    const result = recognizer.getResult(stream);
+      // Cleanup temp file if we created one
+      if (wavInfo.needsCleanup && fs.existsSync(wavInfo.wavPath)) {
+        try { fs.unlinkSync(wavInfo.wavPath); } catch { }
+      }
+
+      // Create a single segment for the entire transcription
+      const segments = result.text.trim() ? [{
+        start: 0,
+        end: totalDuration,
+        text: result.text.trim()
+      }] : [];
+
+      send({
+        type: 'result',
+        text: result.text,
+        segments,
+        duration: totalDuration,
+        timestamps: result.timestamps || [],
+        id
+      });
+      return;
+    }
+
+    // Process in chunks for longer audio
+    const segments = [];
+    let fullText = '';
+    let chunkStart = 0;
+    let chunkIndex = 0;
+    const totalChunks = Math.ceil((totalSamples - overlapSamples) / stepSamples);
+
+    while (chunkStart < totalSamples) {
+      const chunkEnd = Math.min(chunkStart + chunkSamples, totalSamples);
+      const chunkSamplesSlice = samples.slice(chunkStart, chunkEnd);
+
+      // Calculate progress (20-90% for processing)
+      const progressPercent = 20 + Math.floor((chunkIndex / totalChunks) * 70);
+      send({
+        type: 'progress',
+        percent: progressPercent,
+        stage: 'decoding',
+        message: `Processing chunk ${chunkIndex + 1} of ${totalChunks}`,
+        id
+      });
+
+      // Create stream and process chunk
+      const stream = recognizer.createStream();
+      stream.acceptWaveform({
+        sampleRate,
+        samples: chunkSamplesSlice
+      });
+
+      recognizer.decode(stream);
+      const result = recognizer.getResult(stream);
+
+      if (result.text && result.text.trim()) {
+        const chunkStartTime = chunkStart / sampleRate;
+        const chunkEndTime = chunkEnd / sampleRate;
+
+        segments.push({
+          start: chunkStartTime,
+          end: chunkEndTime,
+          text: result.text.trim()
+        });
+
+        fullText += (fullText ? ' ' : '') + result.text.trim();
+      }
+
+      // Move to next chunk
+      chunkStart += stepSamples;
+      chunkIndex++;
+    }
+
+    send({ type: 'progress', percent: 95, stage: 'finalizing', id });
 
     // Cleanup temp file if we created one
     if (wavInfo.needsCleanup && fs.existsSync(wavInfo.wavPath)) {
-      try {
-        fs.unlinkSync(wavInfo.wavPath);
-      } catch {
-        // Ignore cleanup errors
-      }
+      try { fs.unlinkSync(wavInfo.wavPath); } catch { }
     }
 
     send({
       type: 'result',
-      text: result.text,
+      text: fullText,
+      segments,
       duration: totalDuration,
-      timestamps: result.timestamps || [],
+      timestamps: [],
       id
     });
   } catch (err) {
     // Cleanup temp file on error
     if (wavInfo && wavInfo.needsCleanup && fs.existsSync(wavInfo.wavPath)) {
-      try {
-        fs.unlinkSync(wavInfo.wavPath);
-      } catch {
-        // Ignore cleanup errors
-      }
+      try { fs.unlinkSync(wavInfo.wavPath); } catch { }
     }
     send({ type: 'error', error: err.message, id });
   }
