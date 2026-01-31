@@ -1,54 +1,18 @@
 /**
- * Speaker Diarization service using sherpa-onnx (WASM)
+ * Speaker Diarization service using sherpa-onnx-node via worker
  *
  * This service handles:
- * - Loading speaker segmentation and embedding models
+ * - Loading speaker segmentation and embedding models via the transcription worker
  * - Identifying speaker segments in audio
  * - Mapping speakers to transcription segments
+ *
+ * Uses the same worker process as transcription to avoid native addon loading issues.
  */
 
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, readdirSync } from 'fs'
-
-// sherpa-onnx types
-interface SherpaOnnxDiarizationConfig {
-  segmentation: {
-    pyannote: { model: string }
-    numThreads?: number
-    debug?: number
-    provider?: string
-  }
-  embedding: {
-    model: string
-    numThreads?: number
-    debug?: number
-    provider?: string
-  }
-  clustering: {
-    numClusters?: number
-    threshold?: number
-  }
-  minDurationOn?: number
-  minDurationOff?: number
-}
-
-interface SherpaSegment {
-  start: number
-  end: number
-  speaker: number
-}
-
-interface SherpaOnnxDiarization {
-  sampleRate: number
-  process(samples: Float32Array): SherpaSegment[]
-  free(): void
-}
-
-interface SherpaOnnx {
-  createOfflineSpeakerDiarization(config: SherpaOnnxDiarizationConfig): SherpaOnnxDiarization
-  readWave(filename: string): { samples: Float32Array; sampleRate: number }
-}
+import { getTranscriberService, TranscriberService } from './transcriber'
 
 // Public types
 interface SpeakerSegment {
@@ -77,9 +41,8 @@ const REQUIRED_MODELS = {
 
 export class DiarizerService {
   private modelPath: string | null = null
-  private sherpaOnnx: SherpaOnnx | null = null
-  private diarizer: SherpaOnnxDiarization | null = null
-  private isReady = false
+  private transcriber: TranscriberService | null = null
+  private modelsLoaded = false
 
   constructor() {
     this.modelPath = this.findModelPath()
@@ -125,6 +88,13 @@ export class DiarizerService {
     }))
   }
 
+  private getTranscriber(): TranscriberService {
+    if (!this.transcriber) {
+      this.transcriber = getTranscriberService()
+    }
+    return this.transcriber
+  }
+
   async loadModels(): Promise<boolean> {
     if (!this.modelPath) {
       throw new Error('Model directory not found')
@@ -149,34 +119,27 @@ export class DiarizerService {
     }
 
     try {
-      // Dynamic import of sherpa-onnx (WASM)
-      this.sherpaOnnx = await import('sherpa-onnx')
+      // Ensure the worker is running
+      const transcriber = this.getTranscriber()
+      await transcriber.ensureWorkerRunning()
 
-      // Create the diarization pipeline
-      this.diarizer = this.sherpaOnnx.createOfflineSpeakerDiarization({
-        segmentation: {
-          pyannote: { model: segmentationModel },
-          numThreads: 2,
-          debug: 0,
-          provider: 'cpu'
-        },
-        embedding: {
-          model: embeddingModel,
-          numThreads: 2,
-          debug: 0,
-          provider: 'cpu'
-        },
-        clustering: {
-          numClusters: -1, // Auto-detect number of speakers
-          threshold: 0.5
-        },
-        minDurationOn: 0.3,
-        minDurationOff: 0.5
+      console.log('[DiarizerService] Loading diarization models via worker...')
+
+      // Send load request to worker
+      const result = await transcriber.sendWorkerMessage<{ type: string }>({
+        type: 'loadDiarizationModels',
+        modelPath: this.modelPath,
+        segmentationModel: REQUIRED_MODELS.segmentation,
+        embeddingModel: REQUIRED_MODELS.embedding
       })
 
-      this.isReady = true
-      console.log('[DiarizerService] Models loaded successfully')
-      return true
+      if (result.type === 'diarizationModelsLoaded') {
+        this.modelsLoaded = true
+        console.log('[DiarizerService] Models loaded successfully')
+        return true
+      } else {
+        throw new Error('Unexpected response from worker')
+      }
     } catch (error) {
       console.error('[DiarizerService] Failed to load models:', error)
       throw error
@@ -191,56 +154,50 @@ export class DiarizerService {
       onProgress?: ProgressCallback
     } = {}
   ): Promise<DiarizationResult> {
-    if (!this.sherpaOnnx || !this.diarizer) {
-      // Try to load models if not already loaded
+    // Load models if not already loaded
+    if (!this.modelsLoaded) {
       await this.loadModels()
-    }
-
-    if (!this.sherpaOnnx || !this.diarizer) {
-      throw new Error('Diarization models not loaded')
     }
 
     console.log(`[DiarizerService] Diarizing: ${filePath}`)
 
     try {
-      // Report progress: loading
-      options.onProgress?.({ percent: 10, stage: 'loading' })
+      const transcriber = this.getTranscriber()
 
-      // Read the audio file
-      const waveData = this.sherpaOnnx.readWave(filePath)
-
-      // Report progress: segmenting
-      options.onProgress?.({ percent: 30, stage: 'segmenting' })
-
-      // Process the audio
-      const segments = this.diarizer.process(waveData.samples)
-
-      // Report progress: clustering
-      options.onProgress?.({ percent: 80, stage: 'clustering' })
-
-      // Extract unique speakers and format results
-      const speakerSet = new Set<number>()
-      const formattedSegments: SpeakerSegment[] = segments.map((seg) => {
-        speakerSet.add(seg.speaker)
-        return {
-          speaker: `SPEAKER_${seg.speaker.toString().padStart(2, '0')}`,
-          start: seg.start,
-          end: seg.end
+      // Set up progress listener
+      const progressHandler = (msg: { type: string; percent?: number; stage?: string }) => {
+        if (msg.type === 'progress' && options.onProgress) {
+          options.onProgress({
+            percent: msg.percent || 0,
+            stage: (msg.stage as DiarizationProgress['stage']) || 'segmenting'
+          })
         }
-      })
+      }
+      transcriber.onWorkerMessage(progressHandler)
 
-      const speakers = Array.from(speakerSet)
-        .sort((a, b) => a - b)
-        .map((id) => `SPEAKER_${id.toString().padStart(2, '0')}`)
+      try {
+        // Send diarization request to worker
+        const result = await transcriber.sendWorkerMessage<{
+          type: string
+          speakers: string[]
+          segments: SpeakerSegment[]
+        }>({
+          type: 'diarize',
+          filePath,
+          numSpeakers: options.minSpeakers // Use minSpeakers as hint if provided
+        })
 
-      // Report progress: complete
-      options.onProgress?.({ percent: 100, stage: 'clustering' })
-
-      console.log(`[DiarizerService] Found ${speakers.length} speakers`)
-
-      return {
-        speakers,
-        segments: formattedSegments
+        if (result.type === 'diarizationResult') {
+          console.log(`[DiarizerService] Found ${result.speakers.length} speakers`)
+          return {
+            speakers: result.speakers,
+            segments: result.segments
+          }
+        } else {
+          throw new Error('Unexpected response from worker')
+        }
+      } finally {
+        transcriber.offWorkerMessage(progressHandler)
       }
     } catch (error) {
       console.error('[DiarizerService] Diarization failed:', error)
@@ -249,15 +206,11 @@ export class DiarizerService {
   }
 
   isModelLoaded(): boolean {
-    return this.isReady
+    return this.modelsLoaded
   }
 
   dispose(): void {
-    if (this.diarizer) {
-      this.diarizer.free()
-      this.diarizer = null
-    }
-    this.isReady = false
+    this.modelsLoaded = false
   }
 }
 

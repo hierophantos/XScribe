@@ -108,6 +108,7 @@ function convertToWav(inputPath) {
 
 let recognizer = null;
 let currentModel = null;
+let diarizer = null;
 
 // Send a message to the parent process
 function send(msg) {
@@ -125,6 +126,12 @@ function handleMessage(msg) {
       break;
     case 'getAvailableModels':
       getAvailableModels(msg);
+      break;
+    case 'loadDiarizationModels':
+      loadDiarizationModels(msg);
+      break;
+    case 'diarize':
+      diarize(msg);
       break;
     case 'ping':
       send({ type: 'pong', id: msg.id });
@@ -352,6 +359,135 @@ function getAvailableModels(msg) {
     send({ type: 'availableModels', models, id });
   } catch (err) {
     send({ type: 'error', error: err.message, id });
+  }
+}
+
+// ============ Speaker Diarization ============
+
+/**
+ * Load speaker diarization models
+ */
+function loadDiarizationModels(msg) {
+  const { modelPath, segmentationModel, embeddingModel, id } = msg;
+
+  try {
+    const segPath = path.join(modelPath, segmentationModel);
+    const embPath = path.join(modelPath, embeddingModel);
+
+    // Check files exist
+    if (!fs.existsSync(segPath)) {
+      throw new Error(`Segmentation model not found: ${segPath}`);
+    }
+    if (!fs.existsSync(embPath)) {
+      throw new Error(`Embedding model not found: ${embPath}`);
+    }
+
+    send({ type: 'progress', stage: 'loading', message: 'Loading diarization models...', id });
+
+    diarizer = new sherpa.OfflineSpeakerDiarization({
+      segmentation: {
+        pyannote: { model: segPath },
+        numThreads: 2,
+        debug: 0,
+        provider: 'cpu'
+      },
+      embedding: {
+        model: embPath,
+        numThreads: 2,
+        debug: 0,
+        provider: 'cpu'
+      },
+      clustering: {
+        numClusters: -1,  // Auto-detect number of speakers
+        threshold: 0.5
+      },
+      minDurationOn: 0.3,
+      minDurationOff: 0.5
+    });
+
+    send({ type: 'diarizationModelsLoaded', id });
+  } catch (err) {
+    send({ type: 'error', error: `Failed to load diarization models: ${err.message}`, id });
+  }
+}
+
+/**
+ * Perform speaker diarization on an audio file
+ */
+function diarize(msg) {
+  const { filePath, numSpeakers, id } = msg;
+  let wavInfo = null;
+
+  try {
+    if (!diarizer) {
+      throw new Error('Diarization models not loaded');
+    }
+
+    send({ type: 'progress', percent: 10, stage: 'loading', id });
+
+    // Convert to WAV if needed (reuse existing conversion logic)
+    const ext = path.extname(filePath).toLowerCase();
+    if (NEEDS_CONVERSION.includes(ext)) {
+      send({ type: 'progress', percent: 15, stage: 'converting', id });
+      wavInfo = convertToWav(filePath);
+    } else {
+      wavInfo = { wavPath: filePath, needsCleanup: false };
+    }
+
+    send({ type: 'progress', percent: 25, stage: 'reading', id });
+
+    // Read audio file
+    const waveData = sherpa.readWave(wavInfo.wavPath);
+
+    // Set number of speakers if provided
+    if (numSpeakers && numSpeakers > 0) {
+      diarizer.setConfig({
+        clustering: { numClusters: numSpeakers, threshold: 0.5 }
+      });
+    } else {
+      // Reset to auto-detect
+      diarizer.setConfig({
+        clustering: { numClusters: -1, threshold: 0.5 }
+      });
+    }
+
+    send({ type: 'progress', percent: 40, stage: 'segmenting', id });
+
+    // Process audio - this does segmentation, embedding, and clustering
+    const segments = diarizer.process(waveData.samples);
+
+    send({ type: 'progress', percent: 90, stage: 'finalizing', id });
+
+    // Cleanup temp file
+    if (wavInfo.needsCleanup && fs.existsSync(wavInfo.wavPath)) {
+      try { fs.unlinkSync(wavInfo.wavPath); } catch {}
+    }
+
+    // Format segments with speaker labels
+    const formattedSegments = segments.map(seg => ({
+      speaker: `SPEAKER_${String(seg.speaker).padStart(2, '0')}`,
+      start: seg.start,
+      end: seg.end
+    }));
+
+    // Extract unique speakers
+    const speakerSet = new Set(segments.map(s => s.speaker));
+    const speakers = Array.from(speakerSet)
+      .sort((a, b) => a - b)
+      .map(id => `SPEAKER_${String(id).padStart(2, '0')}`);
+
+    send({
+      type: 'diarizationResult',
+      speakers,
+      segments: formattedSegments,
+      id
+    });
+  } catch (err) {
+    // Cleanup temp file on error
+    if (wavInfo && wavInfo.needsCleanup && fs.existsSync(wavInfo.wavPath)) {
+      try { fs.unlinkSync(wavInfo.wavPath); } catch {}
+    }
+    send({ type: 'error', error: `Diarization failed: ${err.message}`, id });
   }
 }
 

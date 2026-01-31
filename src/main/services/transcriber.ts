@@ -281,6 +281,9 @@ export class TranscriberService extends EventEmitter {
   private handleWorkerMessage(msg: WorkerMessage): void {
     const { type, id } = msg
 
+    // Emit general worker message event for external listeners (diarizer)
+    this.emit('workerMessage', msg)
+
     // Handle progress updates (no response needed)
     if (type === 'progress') {
       this.emit('progress', msg)
@@ -617,6 +620,46 @@ export class TranscriberService extends EventEmitter {
       }
       this.pendingRequests.clear()
     }
+  }
+
+  /**
+   * Ensure the worker is running (start if needed)
+   * Used by DiarizerService to share the worker
+   */
+  async ensureWorkerRunning(): Promise<void> {
+    if (!this.worker) {
+      await this.startWorker()
+    }
+  }
+
+  /**
+   * Get the worker instance for sending messages
+   * Used by DiarizerService to share the worker
+   */
+  getWorker(): ChildProcess | null {
+    return this.worker
+  }
+
+  /**
+   * Send a message to the worker (exposed for DiarizerService)
+   */
+  sendWorkerMessage<T>(msg: object): Promise<T> {
+    return this.sendToWorker<T>(msg as Omit<WorkerMessage, 'id'>)
+  }
+
+  /**
+   * Add a listener for worker messages
+   * Used by DiarizerService to handle diarization-specific messages
+   */
+  onWorkerMessage(callback: (msg: WorkerMessage) => void): void {
+    this.on('workerMessage', callback)
+  }
+
+  /**
+   * Remove a listener for worker messages
+   */
+  offWorkerMessage(callback: (msg: WorkerMessage) => void): void {
+    this.off('workerMessage', callback)
   }
 
   dispose(): void {
