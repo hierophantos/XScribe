@@ -1,0 +1,25 @@
+# XScribe Production Dependencies
+# Optimized for minimal bundle size (~700MB target)
+#
+# Key optimizations:
+# - CPU-only PyTorch (saves ~140MB vs CUDA)
+# - No pyinstaller (build-time only)
+# - Removed unused indirect dependencies
+
+# CPU-only PyTorch (must be specified first)
+--index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0,<2.6.0
+torchaudio>=2.0.0,<2.6.0
+
+# WhisperX - transcription with word-level timestamps
+# Note: WhisperX requires pyannote.audio 3.x (not 4.x) for compatibility
+whisperx>=3.1.0
+pyannote.audio>=3.1,<4.0
+
+# Sherpa-ONNX for token-free speaker diarization
+# Uses ONNX models - no HuggingFace token required
+sherpa-onnx>=1.10.0
+
+# Audio processing
+soundfile
+av

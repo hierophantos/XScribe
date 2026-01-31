@@ -6,9 +6,9 @@ directories:
 
 files:
   - out/**/*
+  - "!out/**/*.map"
   - "!node_modules/**/*"
   - node_modules/@electron-toolkit/**/*
-  - node_modules/sherpa-onnx/**/*
   - node_modules/better-sqlite3/**/*
   - node_modules/bindings/**/*
   - node_modules/file-uri-to-path/**/*
@@ -16,22 +16,26 @@ files:
 
 asarUnpack:
   - resources/**
-  - node_modules/sherpa-onnx/**/*.wasm
-  - node_modules/sherpa-onnx/**/*.js
   - node_modules/better-sqlite3/**/*.node
   - node_modules/better-sqlite3/build/**/*
   - node_modules/ffmpeg-static/ffmpeg
   - node_modules/ffmpeg-static/ffmpeg.exe
 
 extraResources:
-  - from: models/
-    to: models/
+  # Python WhisperX transcriber (slimmed venv, no models bundled)
+  # Models are downloaded on-demand by the user
+  - from: python/
+    to: python/
     filter:
       - "**/*"
-  - from: resources/pyannote/
-    to: pyannote/
-    filter:
-      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/tests/**"
+      - "!**/test/**"
+      - "!**/*.pyc"
+      - "!**/*.pyi"
+  # NO models bundled - user downloads on first use:
+  # - Whisper models: tiny.en (38MB) to large-v3-turbo (1.6GB)
+  # - Diarization models: sherpa-onnx (~50MB)
 
 mac:
   target:
@@ -84,6 +88,6 @@ nodeGypRebuild: false
 
 publish:
   provider: github
-  owner: ""
-  repo: xscribe
-  releaseType: draft
+  owner: hierophantos
+  repo: XScribe
+  releaseType: release

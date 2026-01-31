@@ -11,18 +11,18 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "prebuild": "electron-vite build",
-    "postinstall": "node scripts/postinstall.js && electron-builder install-app-deps",
+    "postinstall": "electron-builder install-app-deps",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
+    "release": "npm run build && electron-builder --publish always",
+    "release:mac": "npm run build && electron-builder --mac --publish always",
+    "release:win": "npm run build && electron-builder --win --publish always",
+    "release:linux": "npm run build && electron-builder --linux --publish always",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . --ext .ts,.tsx,.vue",
-    "download:models": "bash scripts/download-models.sh",
-    "download:models:tiny": "WHISPER_MODEL=tiny bash scripts/download-models.sh",
-    "download:models:small": "WHISPER_MODEL=small bash scripts/download-models.sh",
-    "download:models:medium": "WHISPER_MODEL=medium bash scripts/download-models.sh"
+    "lint": "eslint . --ext .ts,.tsx,.vue"
   },
   "dependencies": {
     "@electron-toolkit/utils": "^3.0.0",
@@ -31,8 +31,6 @@
     "docx": "^9.5.1",
     "ffmpeg-static": "^5.3.0",
     "pinia": "^3.0.4",
-    "sherpa-onnx": "^1.12.23",
-    "sherpa-onnx-node": "^1.12.23",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
@@ -45,6 +43,7 @@
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
+    "terser": "^5.46.0",
     "typescript": "^5.7.2",
     "vite": "^5.4.0",
     "vue": "^3.5.13",

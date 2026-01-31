@@ -30,6 +30,14 @@ export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin(), copyWorkerPlugin()],
     build: {
+      minify: 'terser',
+      terserOptions: {
+        compress: {
+          drop_console: true,
+          drop_debugger: true,
+          pure_funcs: ['console.log', 'console.debug']
+        }
+      },
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/main/index.ts')
@@ -40,6 +48,7 @@ export default defineConfig({
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
+      minify: 'terser',
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/preload/index.ts')
@@ -50,9 +59,21 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
     build: {
+      minify: 'terser',
+      terserOptions: {
+        compress: {
+          drop_console: true,
+          drop_debugger: true
+        }
+      },
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/renderer/index.html')
+        },
+        output: {
+          manualChunks: {
+            'vue-vendor': ['vue', 'pinia']
+          }
         }
       }
     },

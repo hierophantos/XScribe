@@ -2,7 +2,7 @@
  * Export service - handles exporting transcriptions to various formats
  */
 
-import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx'
+// Note: docx is lazy-loaded in toDOCX() to reduce initial bundle size
 
 interface Segment {
   id: number
@@ -103,7 +103,7 @@ export class ExporterService {
 
       if (seg.speakerId !== lastSpeaker) {
         if (lines.length > 0) {
-          lines.push('') // Add blank line between speakers
+          lines.push('', '', '') // Add 3 blank lines between speakers (4 newlines total)
         }
         lines.push(`${speakerName}:`)
         lastSpeaker = seg.speakerId
@@ -148,13 +148,18 @@ export class ExporterService {
 
   /**
    * Export to DOCX (Word document)
+   * Note: docx library is lazy-loaded to reduce initial bundle size (~6MB)
    */
   async toDOCX(
     transcription: Transcription,
     segments: Segment[],
     speakers: Speaker[]
   ): Promise<Buffer> {
-    const children: Paragraph[] = []
+    // Lazy load docx library only when needed
+    const { Document, Packer, Paragraph, TextRun, HeadingLevel } = await import('docx')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const children: any[] = []
 
     // Title
     children.push(
