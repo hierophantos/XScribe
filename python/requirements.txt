@@ -1,0 +1,16 @@
+# Pyannote Speaker Diarization Dependencies
+#
+# Note: pyannote.audio requires accepting the model terms on HuggingFace:
+# https://huggingface.co/pyannote/speaker-diarization-3.1
+#
+# GPU Support:
+# - CUDA: Install torch with CUDA support (pip install torch --index-url https://download.pytorch.org/whl/cu118)
+# - MPS (Apple Metal): Works automatically with standard torch on macOS
+# - CPU: Default fallback
+
+pyannote.audio>=3.1.0
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# For building standalone executable
+pyinstaller>=6.0.0
