@@ -1,23 +1,32 @@
 /**
  * Setup Service - handles Python environment setup
  *
- * In PRODUCTION (packaged app):
- *   - Python is bundled with the app (pre-built in CI)
- *   - No download or installation needed
- *   - App is ready immediately on first launch
+ * Supports three build types:
  *
- * In DEVELOPMENT:
- *   - Downloads portable Python if not present
- *   - Installs WhisperX and dependencies
- *   - Stores in user data directory
+ * 1. BUNDLED (production, default):
+ *    - Python is bundled with the app (pre-built in CI)
+ *    - No download or installation needed
+ *    - App is ready immediately on first launch
+ *
+ * 2. LITE (production, -lite builds):
+ *    - App is packaged without Python (~50MB vs ~750MB)
+ *    - Python is downloaded at runtime on first use
+ *    - Stores Python in user data directory
+ *
+ * 3. DEVELOPMENT:
+ *    - Downloads portable Python if not present
+ *    - Installs WhisperX and dependencies
+ *    - Stores in user data directory
  */
 
 import { app } from 'electron'
 import { spawn } from 'child_process'
-import { createWriteStream, existsSync, mkdirSync, chmodSync } from 'fs'
+import { createWriteStream, existsSync, mkdirSync, chmodSync, readFileSync } from 'fs'
 import { writeFile, rm } from 'fs/promises'
 import { join } from 'path'
 import https from 'https'
+
+export type BuildType = 'bundled' | 'lite' | 'development'
 
 // Portable Python download URLs by platform (for development only)
 const PYTHON_DOWNLOADS: Record<string, { url: string; extractedDir: string }> = {
@@ -49,38 +58,77 @@ export interface SetupProgress {
 type ProgressCallback = (progress: SetupProgress) => void
 
 export class SetupService {
-  private devSetupDir: string
-  private devPythonDir: string
-  private devSetupCompleteFile: string
+  private runtimeDir: string
+  private runtimePythonDir: string
+  private setupCompleteFile: string
+  private buildType: BuildType | null = null
 
   constructor() {
-    // Development setup directory (only used when not packaged)
-    this.devSetupDir = join(app.getPath('userData'), 'runtime')
-    this.devPythonDir = join(this.devSetupDir, 'python')
-    this.devSetupCompleteFile = join(this.devSetupDir, '.setup-complete')
+    // Runtime setup directory (used for lite builds and development)
+    this.runtimeDir = join(app.getPath('userData'), 'runtime')
+    this.runtimePythonDir = join(this.runtimeDir, 'python')
+    this.setupCompleteFile = join(this.runtimeDir, '.setup-complete')
+  }
+
+  /**
+   * Detect the build type: bundled, lite, or development
+   */
+  getBuildType(): BuildType {
+    // Cache the result
+    if (this.buildType !== null) {
+      return this.buildType
+    }
+
+    // Development mode
+    if (!app.isPackaged) {
+      this.buildType = 'development'
+      console.log('[SetupService] Build type: development')
+      return this.buildType
+    }
+
+    // Production mode - check for lite build marker
+    const markerPath = join(process.resourcesPath, 'build-markers', 'build-type.txt')
+    if (existsSync(markerPath)) {
+      try {
+        const content = readFileSync(markerPath, 'utf-8').trim()
+        if (content === 'lite') {
+          this.buildType = 'lite'
+          console.log('[SetupService] Build type: lite (marker found)')
+          return this.buildType
+        }
+      } catch (err) {
+        console.warn('[SetupService] Failed to read build type marker:', err)
+      }
+    }
+
+    // Default: bundled (production without lite marker)
+    this.buildType = 'bundled'
+    console.log('[SetupService] Build type: bundled')
+    return this.buildType
   }
 
   /**
    * Check if setup is complete
    */
   async isSetupComplete(): Promise<boolean> {
+    const buildType = this.getBuildType()
     const pythonPath = this.getPythonPath()
 
-    // Check if Python exists
+    // Check if Python exists at the expected location
     if (!existsSync(pythonPath)) {
       console.log('[SetupService] Python not found at:', pythonPath)
       return false
     }
 
-    // In production, bundled Python is always ready
-    if (app.isPackaged) {
-      console.log('[SetupService] Production mode - bundled Python found')
+    // Bundled builds: Python presence is sufficient
+    if (buildType === 'bundled') {
+      console.log('[SetupService] Bundled build - Python found, ready')
       return true
     }
 
-    // In development, check for setup complete marker
-    if (!existsSync(this.devSetupCompleteFile)) {
-      console.log('[SetupService] Development mode - setup not complete')
+    // Lite and development builds: check for setup complete marker
+    if (!existsSync(this.setupCompleteFile)) {
+      console.log(`[SetupService] ${buildType} build - setup not complete (no marker)`)
       return false
     }
 
@@ -98,8 +146,10 @@ export class SetupService {
    * Get the path to the Python executable
    */
   getPythonPath(): string {
-    if (app.isPackaged) {
-      // Production: Python is bundled in resources
+    const buildType = this.getBuildType()
+
+    // Bundled builds: Python is in resources
+    if (buildType === 'bundled') {
       const resourcesPath = process.resourcesPath
       if (process.platform === 'win32') {
         return join(resourcesPath, 'python', 'python.exe')
@@ -107,36 +157,45 @@ export class SetupService {
       return join(resourcesPath, 'python', 'bin', 'python3')
     }
 
-    // Development: use local venv if it exists, otherwise use runtime directory
-    const localVenvPython = process.platform === 'win32'
-      ? join(process.cwd(), 'python', 'venv', 'Scripts', 'python.exe')
-      : join(process.cwd(), 'python', 'venv', 'bin', 'python3')
+    // Development: use local venv if it exists
+    if (buildType === 'development') {
+      const localVenvPython = process.platform === 'win32'
+        ? join(process.cwd(), 'python', 'venv', 'Scripts', 'python.exe')
+        : join(process.cwd(), 'python', 'venv', 'bin', 'python3')
 
-    if (existsSync(localVenvPython)) {
-      return localVenvPython
+      if (existsSync(localVenvPython)) {
+        return localVenvPython
+      }
     }
 
-    // Fallback to runtime directory
+    // Lite builds and development fallback: use runtime directory
     if (process.platform === 'win32') {
-      return join(this.devPythonDir, 'python.exe')
+      return join(this.runtimePythonDir, 'python.exe')
     }
-    return join(this.devPythonDir, 'bin', 'python3')
+    return join(this.runtimePythonDir, 'bin', 'python3')
   }
 
   /**
    * Get the directory containing Python (for PATH setup)
    */
   getPythonDir(): string {
-    if (app.isPackaged) {
+    const buildType = this.getBuildType()
+
+    // Bundled builds: Python is in resources
+    if (buildType === 'bundled') {
       return join(process.resourcesPath, 'python')
     }
 
-    const localVenv = join(process.cwd(), 'python', 'venv')
-    if (existsSync(localVenv)) {
-      return localVenv
+    // Development: use local venv if it exists
+    if (buildType === 'development') {
+      const localVenv = join(process.cwd(), 'python', 'venv')
+      if (existsSync(localVenv)) {
+        return localVenv
+      }
     }
 
-    return this.devPythonDir
+    // Lite builds and development fallback: use runtime directory
+    return this.runtimePythonDir
   }
 
   /**
@@ -152,13 +211,16 @@ export class SetupService {
 
   /**
    * Run the setup process
-   * In production, this is a no-op (Python is bundled)
-   * In development, downloads and installs Python if needed
+   * - Bundled: No-op, Python is bundled
+   * - Lite: Downloads and installs Python at runtime
+   * - Development: Downloads and installs Python if needed
    */
   async runSetup(onProgress: ProgressCallback): Promise<void> {
-    // In production, Python is bundled - no setup needed
-    if (app.isPackaged) {
-      console.log('[SetupService] Production mode - skipping setup (Python is bundled)')
+    const buildType = this.getBuildType()
+
+    // Bundled builds: Python is pre-packaged, no setup needed
+    if (buildType === 'bundled') {
+      console.log('[SetupService] Bundled build - skipping setup (Python is bundled)')
       onProgress({
         stage: 'complete',
         percent: 100,
@@ -167,13 +229,13 @@ export class SetupService {
       return
     }
 
-    // Development mode - run full setup
-    console.log('[SetupService] Development mode - running setup')
+    // Lite and development builds: run full setup
+    console.log(`[SetupService] ${buildType} build - running setup`)
 
     try {
       // Create setup directory
-      if (!existsSync(this.devSetupDir)) {
-        mkdirSync(this.devSetupDir, { recursive: true })
+      if (!existsSync(this.runtimeDir)) {
+        mkdirSync(this.runtimeDir, { recursive: true })
       }
 
       // Step 1: Download Python if needed
@@ -197,7 +259,7 @@ export class SetupService {
       await this.installDependencies(onProgress)
 
       // Step 3: Mark setup as complete
-      await writeFile(this.devSetupCompleteFile, new Date().toISOString())
+      await writeFile(this.setupCompleteFile, new Date().toISOString())
 
       onProgress({
         stage: 'complete',
@@ -217,7 +279,7 @@ export class SetupService {
   }
 
   /**
-   * Download and extract portable Python (development only)
+   * Download and extract portable Python (lite and development builds)
    */
   private async downloadAndExtractPython(onProgress: ProgressCallback): Promise<void> {
     // Determine platform-specific download
@@ -231,7 +293,7 @@ export class SetupService {
       throw new Error(`Unsupported platform: ${process.platform} ${process.arch}`)
     }
 
-    const tarPath = join(this.devSetupDir, 'python.tar.gz')
+    const tarPath = join(this.runtimeDir, 'python.tar.gz')
 
     // Download
     await this.downloadFile(downloadInfo.url, tarPath, (percent) => {
@@ -249,14 +311,14 @@ export class SetupService {
       message: 'Extracting Python runtime...'
     })
 
-    await this.extractTarGz(tarPath, this.devSetupDir)
+    await this.extractTarGz(tarPath, this.runtimeDir)
 
     // Clean up tar file
     await rm(tarPath, { force: true })
 
     // Make Python executable on Unix
     if (process.platform !== 'win32') {
-      const pythonPath = join(this.devPythonDir, 'bin', 'python3')
+      const pythonPath = join(this.runtimePythonDir, 'bin', 'python3')
       if (existsSync(pythonPath)) {
         chmodSync(pythonPath, 0o755)
       }
@@ -264,7 +326,7 @@ export class SetupService {
   }
 
   /**
-   * Install Python dependencies (development only)
+   * Install Python dependencies (lite and development builds)
    */
   private async installDependencies(onProgress: ProgressCallback): Promise<void> {
     // Upgrade pip first
@@ -349,7 +411,7 @@ export class SetupService {
       const pythonDir = this.getPythonDir()
 
       const proc = spawn(pythonPath, args, {
-        cwd: app.isPackaged ? process.resourcesPath : this.devSetupDir,
+        cwd: this.getBuildType() === 'bundled' ? process.resourcesPath : this.runtimeDir,
         env: {
           ...process.env,
           PYTHONPATH: pythonDir,
@@ -461,17 +523,23 @@ export class SetupService {
   }
 
   /**
-   * Reset setup (for debugging/reinstall - development only)
+   * Reset setup (for debugging/reinstall - lite and development builds only)
    */
   async resetSetup(): Promise<void> {
-    if (app.isPackaged) {
+    const buildType = this.getBuildType()
+
+    if (buildType === 'bundled') {
       console.log('[SetupService] Cannot reset bundled Python in production')
       return
     }
 
-    if (existsSync(this.devSetupDir)) {
-      await rm(this.devSetupDir, { recursive: true, force: true })
+    console.log(`[SetupService] Resetting ${buildType} build setup`)
+    if (existsSync(this.runtimeDir)) {
+      await rm(this.runtimeDir, { recursive: true, force: true })
     }
+
+    // Clear cached build type to allow re-detection
+    this.buildType = null
   }
 }
 

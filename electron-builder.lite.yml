@@ -1,0 +1,95 @@
+# Lite build configuration - Python is downloaded at runtime instead of bundled
+# This results in a smaller initial download (~50MB vs ~750MB)
+# Users will download Python dependencies on first transcription
+
+appId: com.xscribe.app
+productName: XScribe
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - out/**/*
+  - "!out/**/*.map"
+  - "!node_modules/**/*"
+  - node_modules/@electron-toolkit/**/*
+  - node_modules/better-sqlite3/**/*
+  - node_modules/bindings/**/*
+  - node_modules/file-uri-to-path/**/*
+  - node_modules/ffmpeg-static/**/*
+  - node_modules/uuid/**/*
+
+asarUnpack:
+  - resources/**
+  - node_modules/better-sqlite3/**/*.node
+  - node_modules/better-sqlite3/build/**/*
+  - node_modules/ffmpeg-static/ffmpeg
+  - node_modules/ffmpeg-static/ffmpeg.exe
+
+extraResources:
+  # Lite builds: only include Python transcriber scripts (no venv)
+  # Python will be downloaded at runtime by setup-service
+  - from: python/
+    to: python/
+    filter:
+      - "transcriber.py"
+      - "sherpa_diarizer.py"
+  # Build type marker so app knows it's a lite build
+  - from: build-markers/
+    to: build-markers/
+    filter:
+      - "**/*"
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  # Lite builds use different artifact name
+  artifactName: ${name}-${version}-lite-${arch}.${ext}
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: ${name}-${version}-lite-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  category: AudioVideo
+  maintainer: xscribe
+  artifactName: ${name}-${version}-lite-${arch}.${ext}
+
+npmRebuild: true
+nodeGypRebuild: false
+
+publish:
+  provider: github
+  owner: hierophantos
+  repo: XScribe
+  releaseType: release

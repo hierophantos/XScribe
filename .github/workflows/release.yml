@@ -4,7 +4,16 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type (bundled includes Python ~750MB, lite downloads at runtime ~50MB)'
+        required: true
+        default: 'bundled'
+        type: choice
+        options:
+          - bundled
+          - lite
 
 permissions:
   contents: write
@@ -38,17 +47,33 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Download pre-built Python venv for this platform
+      # Determine build type from input or tag pattern
+      # Tags ending in -lite = lite build, otherwise bundled
+      - name: Determine build type
+        id: build-type
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "type=${{ github.event.inputs.build_type }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == *"-lite"* ]]; then
+            echo "type=lite" >> $GITHUB_OUTPUT
+          else
+            echo "type=bundled" >> $GITHUB_OUTPUT
+          fi
+          echo "Build type: $(cat $GITHUB_OUTPUT | grep type | cut -d= -f2)"
+        shell: bash
+
+      # Download pre-built Python venv for this platform (bundled builds only)
       - name: Download Python venv
+        if: steps.build-type.outputs.type == 'bundled'
         uses: dawidd6/action-download-artifact@v3
         with:
           workflow: build-python-venv.yml
           name: python-venv-${{ matrix.venv }}
           path: ./venv-archive
 
-      # Extract venv to python-bundled/ directory
+      # Extract venv to python-bundled/ directory (bundled builds only)
       - name: Extract Python venv (Unix)
-        if: runner.os != 'Windows'
+        if: steps.build-type.outputs.type == 'bundled' && runner.os != 'Windows'
         run: |
           tar -xzf ./venv-archive/python-venv-${{ matrix.venv }}.tar.gz
           mv python python-bundled
@@ -57,12 +82,21 @@ jobs:
           du -sh python-bundled/
 
       - name: Extract Python venv (Windows)
-        if: runner.os == 'Windows'
+        if: steps.build-type.outputs.type == 'bundled' && runner.os == 'Windows'
         run: |
           tar -xzf ./venv-archive/python-venv-${{ matrix.venv }}.tar.gz
           Rename-Item python python-bundled
           Get-ChildItem python-bundled
         shell: pwsh
+
+      # Create build type marker for lite builds
+      - name: Create lite build marker
+        if: steps.build-type.outputs.type == 'lite'
+        run: |
+          mkdir -p build-markers
+          echo "lite" > build-markers/build-type.txt
+          echo "Created lite build marker"
+        shell: bash
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -76,21 +110,40 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Package for macOS
-        if: matrix.platform == 'mac'
+      # Package using appropriate config based on build type
+      - name: Package for macOS (bundled)
+        if: matrix.platform == 'mac' && steps.build-type.outputs.type == 'bundled'
         run: npx electron-builder --mac --${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Package for Windows
-        if: matrix.platform == 'win'
+      - name: Package for macOS (lite)
+        if: matrix.platform == 'mac' && steps.build-type.outputs.type == 'lite'
+        run: npx electron-builder --mac --${{ matrix.arch }} --publish never -c electron-builder.lite.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package for Windows (bundled)
+        if: matrix.platform == 'win' && steps.build-type.outputs.type == 'bundled'
         run: npx electron-builder --win --${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Package for Linux
-        if: matrix.platform == 'linux'
+      - name: Package for Windows (lite)
+        if: matrix.platform == 'win' && steps.build-type.outputs.type == 'lite'
+        run: npx electron-builder --win --${{ matrix.arch }} --publish never -c electron-builder.lite.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package for Linux (bundled)
+        if: matrix.platform == 'linux' && steps.build-type.outputs.type == 'bundled'
         run: npx electron-builder --linux --${{ matrix.arch }} --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package for Linux (lite)
+        if: matrix.platform == 'linux' && steps.build-type.outputs.type == 'lite'
+        run: npx electron-builder --linux --${{ matrix.arch }} --publish never -c electron-builder.lite.yml
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
