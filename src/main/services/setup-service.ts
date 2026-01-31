@@ -1,22 +1,25 @@
 /**
- * Setup Service - handles first-run setup of Python environment
+ * Setup Service - handles Python environment setup
  *
- * On first launch, this service:
- * 1. Checks if embedded Python exists
- * 2. Downloads portable Python if needed
- * 3. Installs WhisperX and dependencies
- * 4. Marks setup as complete
+ * In PRODUCTION (packaged app):
+ *   - Python is bundled with the app (pre-built in CI)
+ *   - No download or installation needed
+ *   - App is ready immediately on first launch
+ *
+ * In DEVELOPMENT:
+ *   - Downloads portable Python if not present
+ *   - Installs WhisperX and dependencies
+ *   - Stores in user data directory
  */
 
 import { app } from 'electron'
-import { spawn, ChildProcess } from 'child_process'
+import { spawn } from 'child_process'
 import { createWriteStream, existsSync, mkdirSync, chmodSync } from 'fs'
-import { readFile, writeFile, rm } from 'fs/promises'
+import { writeFile, rm } from 'fs/promises'
 import { join } from 'path'
 import https from 'https'
-import { createHash } from 'crypto'
 
-// Portable Python download URLs by platform
+// Portable Python download URLs by platform (for development only)
 const PYTHON_DOWNLOADS: Record<string, { url: string; extractedDir: string }> = {
   darwin: {
     url: 'https://github.com/indygreg/python-build-standalone/releases/download/20240415/cpython-3.11.9+20240415-aarch64-apple-darwin-install_only.tar.gz',
@@ -46,69 +49,131 @@ export interface SetupProgress {
 type ProgressCallback = (progress: SetupProgress) => void
 
 export class SetupService {
-  private setupDir: string
-  private pythonDir: string
-  private setupCompleteFile: string
+  private devSetupDir: string
+  private devPythonDir: string
+  private devSetupCompleteFile: string
 
   constructor() {
-    // Store setup in user data directory
-    this.setupDir = join(app.getPath('userData'), 'runtime')
-    this.pythonDir = join(this.setupDir, 'python')
-    this.setupCompleteFile = join(this.setupDir, '.setup-complete')
+    // Development setup directory (only used when not packaged)
+    this.devSetupDir = join(app.getPath('userData'), 'runtime')
+    this.devPythonDir = join(this.devSetupDir, 'python')
+    this.devSetupCompleteFile = join(this.devSetupDir, '.setup-complete')
   }
 
   /**
    * Check if setup is complete
    */
   async isSetupComplete(): Promise<boolean> {
-    // Check for setup complete marker
-    if (!existsSync(this.setupCompleteFile)) {
-      return false
-    }
-
-    // Verify Python actually exists and works
     const pythonPath = this.getPythonPath()
+
+    // Check if Python exists
     if (!existsSync(pythonPath)) {
+      console.log('[SetupService] Python not found at:', pythonPath)
       return false
     }
 
-    // Try running Python to verify it works
+    // In production, bundled Python is always ready
+    if (app.isPackaged) {
+      console.log('[SetupService] Production mode - bundled Python found')
+      return true
+    }
+
+    // In development, check for setup complete marker
+    if (!existsSync(this.devSetupCompleteFile)) {
+      console.log('[SetupService] Development mode - setup not complete')
+      return false
+    }
+
+    // Verify Python actually works
     try {
       await this.runPythonCommand(['-c', 'import whisperx; print("ok")'], () => {})
       return true
     } catch {
+      console.log('[SetupService] Python verification failed')
       return false
     }
   }
 
   /**
-   * Get the path to the embedded Python executable
+   * Get the path to the Python executable
    */
   getPythonPath(): string {
-    if (process.platform === 'win32') {
-      return join(this.pythonDir, 'python.exe')
+    if (app.isPackaged) {
+      // Production: Python is bundled in resources
+      const resourcesPath = process.resourcesPath
+      if (process.platform === 'win32') {
+        return join(resourcesPath, 'python', 'python.exe')
+      }
+      return join(resourcesPath, 'python', 'bin', 'python3')
     }
-    return join(this.pythonDir, 'bin', 'python3')
+
+    // Development: use local venv if it exists, otherwise use runtime directory
+    const localVenvPython = process.platform === 'win32'
+      ? join(process.cwd(), 'python', 'venv', 'Scripts', 'python.exe')
+      : join(process.cwd(), 'python', 'venv', 'bin', 'python3')
+
+    if (existsSync(localVenvPython)) {
+      return localVenvPython
+    }
+
+    // Fallback to runtime directory
+    if (process.platform === 'win32') {
+      return join(this.devPythonDir, 'python.exe')
+    }
+    return join(this.devPythonDir, 'bin', 'python3')
+  }
+
+  /**
+   * Get the directory containing Python (for PATH setup)
+   */
+  getPythonDir(): string {
+    if (app.isPackaged) {
+      return join(process.resourcesPath, 'python')
+    }
+
+    const localVenv = join(process.cwd(), 'python', 'venv')
+    if (existsSync(localVenv)) {
+      return localVenv
+    }
+
+    return this.devPythonDir
   }
 
   /**
    * Get the path to pip
    */
   private getPipPath(): string {
+    const pythonDir = this.getPythonDir()
     if (process.platform === 'win32') {
-      return join(this.pythonDir, 'Scripts', 'pip.exe')
+      return join(pythonDir, 'Scripts', 'pip.exe')
     }
-    return join(this.pythonDir, 'bin', 'pip3')
+    return join(pythonDir, 'bin', 'pip3')
   }
 
   /**
-   * Run the full setup process
+   * Run the setup process
+   * In production, this is a no-op (Python is bundled)
+   * In development, downloads and installs Python if needed
    */
   async runSetup(onProgress: ProgressCallback): Promise<void> {
+    // In production, Python is bundled - no setup needed
+    if (app.isPackaged) {
+      console.log('[SetupService] Production mode - skipping setup (Python is bundled)')
+      onProgress({
+        stage: 'complete',
+        percent: 100,
+        message: 'Ready!'
+      })
+      return
+    }
+
+    // Development mode - run full setup
+    console.log('[SetupService] Development mode - running setup')
+
     try {
       // Create setup directory
-      if (!existsSync(this.setupDir)) {
-        mkdirSync(this.setupDir, { recursive: true })
+      if (!existsSync(this.devSetupDir)) {
+        mkdirSync(this.devSetupDir, { recursive: true })
       }
 
       // Step 1: Download Python if needed
@@ -132,7 +197,7 @@ export class SetupService {
       await this.installDependencies(onProgress)
 
       // Step 3: Mark setup as complete
-      await writeFile(this.setupCompleteFile, new Date().toISOString())
+      await writeFile(this.devSetupCompleteFile, new Date().toISOString())
 
       onProgress({
         stage: 'complete',
@@ -152,7 +217,7 @@ export class SetupService {
   }
 
   /**
-   * Download and extract portable Python
+   * Download and extract portable Python (development only)
    */
   private async downloadAndExtractPython(onProgress: ProgressCallback): Promise<void> {
     // Determine platform-specific download
@@ -166,7 +231,7 @@ export class SetupService {
       throw new Error(`Unsupported platform: ${process.platform} ${process.arch}`)
     }
 
-    const tarPath = join(this.setupDir, 'python.tar.gz')
+    const tarPath = join(this.devSetupDir, 'python.tar.gz')
 
     // Download
     await this.downloadFile(downloadInfo.url, tarPath, (percent) => {
@@ -184,14 +249,14 @@ export class SetupService {
       message: 'Extracting Python runtime...'
     })
 
-    await this.extractTarGz(tarPath, this.setupDir)
+    await this.extractTarGz(tarPath, this.devSetupDir)
 
     // Clean up tar file
     await rm(tarPath, { force: true })
 
     // Make Python executable on Unix
     if (process.platform !== 'win32') {
-      const pythonPath = this.getPythonPath()
+      const pythonPath = join(this.devPythonDir, 'bin', 'python3')
       if (existsSync(pythonPath)) {
         chmodSync(pythonPath, 0o755)
       }
@@ -199,11 +264,9 @@ export class SetupService {
   }
 
   /**
-   * Install Python dependencies
+   * Install Python dependencies (development only)
    */
   private async installDependencies(onProgress: ProgressCallback): Promise<void> {
-    const pipPath = this.getPipPath()
-
     // Upgrade pip first
     onProgress({
       stage: 'installing-deps',
@@ -283,14 +346,16 @@ export class SetupService {
   private runPythonCommand(args: string[], onOutput: (line: string) => void): Promise<void> {
     return new Promise((resolve, reject) => {
       const pythonPath = this.getPythonPath()
+      const pythonDir = this.getPythonDir()
+
       const proc = spawn(pythonPath, args, {
-        cwd: this.setupDir,
+        cwd: app.isPackaged ? process.resourcesPath : this.devSetupDir,
         env: {
           ...process.env,
-          PYTHONPATH: this.pythonDir,
+          PYTHONPATH: pythonDir,
           PATH: process.platform === 'win32'
-            ? `${this.pythonDir};${this.pythonDir}\\Scripts;${process.env.PATH}`
-            : `${join(this.pythonDir, 'bin')}:${process.env.PATH}`
+            ? `${pythonDir};${pythonDir}\\Scripts;${process.env.PATH}`
+            : `${join(pythonDir, 'bin')}:${process.env.PATH}`
         }
       })
 
@@ -381,8 +446,7 @@ export class SetupService {
    */
   private extractTarGz(tarPath: string, destDir: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const tar = process.platform === 'win32' ? 'tar' : 'tar'
-      const proc = spawn(tar, ['-xzf', tarPath, '-C', destDir])
+      const proc = spawn('tar', ['-xzf', tarPath, '-C', destDir])
 
       proc.on('close', (code) => {
         if (code === 0) {
@@ -397,11 +461,16 @@ export class SetupService {
   }
 
   /**
-   * Reset setup (for debugging/reinstall)
+   * Reset setup (for debugging/reinstall - development only)
    */
   async resetSetup(): Promise<void> {
-    if (existsSync(this.setupDir)) {
-      await rm(this.setupDir, { recursive: true, force: true })
+    if (app.isPackaged) {
+      console.log('[SetupService] Cannot reset bundled Python in production')
+      return
+    }
+
+    if (existsSync(this.devSetupDir)) {
+      await rm(this.devSetupDir, { recursive: true, force: true })
     }
   }
 }

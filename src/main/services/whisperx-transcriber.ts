@@ -131,34 +131,66 @@ export class WhisperXTranscriberService extends EventEmitter {
     super()
   }
 
-  private getExecutablePath(): string | null {
-    // Check multiple possible locations for the Python script/executable
+  /**
+   * Get the path to the transcriber.py script
+   */
+  private getTranscriberScriptPath(): string | null {
     const possiblePaths = [
-      // Development: run Python script directly
-      join(process.cwd(), 'python', 'transcriber.py'),
-      // Production: bundled executable
-      join(app.getAppPath(), '..', 'python', 'whisperx-transcriber'),
-      join(process.resourcesPath || '', 'python', 'whisperx-transcriber')
+      // Production: bundled in resources
+      join(process.resourcesPath || '', 'python', 'transcriber.py'),
+      // Development: local python directory
+      join(process.cwd(), 'python', 'transcriber.py')
     ]
-
-    // On Windows, add .exe extension for compiled executables
-    if (process.platform === 'win32') {
-      const withExe = possiblePaths.map((p) =>
-        p.endsWith('.py') ? p : p + '.exe'
-      )
-      possiblePaths.length = 0
-      possiblePaths.push(...withExe)
-    }
 
     for (const path of possiblePaths) {
       if (existsSync(path)) {
-        console.log('[WhisperXTranscriberService] Found executable:', path)
+        console.log('[WhisperXTranscriberService] Found transcriber script:', path)
         return path
       }
     }
 
-    console.error('[WhisperXTranscriberService] No executable found. Searched:', possiblePaths)
+    console.error('[WhisperXTranscriberService] Transcriber script not found. Searched:', possiblePaths)
     return null
+  }
+
+  /**
+   * Get the path to the Python executable
+   */
+  private getPythonPath(): string | null {
+    if (app.isPackaged) {
+      // Production: Python is bundled in resources
+      const resourcesPath = process.resourcesPath
+      const pythonPath = process.platform === 'win32'
+        ? join(resourcesPath, 'python', 'python.exe')
+        : join(resourcesPath, 'python', 'bin', 'python3')
+
+      if (existsSync(pythonPath)) {
+        console.log('[WhisperXTranscriberService] Using bundled Python:', pythonPath)
+        return pythonPath
+      }
+      console.error('[WhisperXTranscriberService] Bundled Python not found at:', pythonPath)
+      return null
+    }
+
+    // Development: use local venv or system Python
+    const venvPython = process.platform === 'win32'
+      ? join(process.cwd(), 'python', 'venv', 'Scripts', 'python.exe')
+      : join(process.cwd(), 'python', 'venv', 'bin', 'python3')
+
+    if (existsSync(venvPython)) {
+      console.log('[WhisperXTranscriberService] Using local venv Python:', venvPython)
+      return venvPython
+    }
+
+    // Fallback to system Python
+    const systemPython = process.platform === 'win32' ? 'python' : 'python3'
+    console.log('[WhisperXTranscriberService] Using system Python:', systemPython)
+    return systemPython
+  }
+
+  private getExecutablePath(): string | null {
+    // For backward compatibility, just return the transcriber script path
+    return this.getTranscriberScriptPath()
   }
 
   private async ensureProcessRunning(): Promise<void> {
@@ -169,44 +201,46 @@ export class WhisperXTranscriberService extends EventEmitter {
       return
     }
 
-    const execPath = this.getExecutablePath()
-    if (!execPath) {
+    const scriptPath = this.getTranscriberScriptPath()
+    if (!scriptPath) {
       throw new Error(
-        'WhisperX transcriber not found. Please ensure python/transcriber.py exists and whisperx is installed.'
+        'WhisperX transcriber not found. Please ensure python/transcriber.py exists.'
+      )
+    }
+
+    const pythonPath = this.getPythonPath()
+    if (!pythonPath) {
+      throw new Error(
+        'Python not found. Please ensure Python is installed or bundled with the app.'
       )
     }
 
     console.log('[WhisperXTranscriberService] Starting Python process...')
+    console.log('[WhisperXTranscriberService] Python:', pythonPath)
+    console.log('[WhisperXTranscriberService] Script:', scriptPath)
 
     // Create ready promise
     this.readyPromise = new Promise<void>((resolve) => {
       this.readyResolve = resolve
     })
 
-    // Determine how to run the executable
-    const isPythonScript = execPath.endsWith('.py')
+    // Build environment with correct paths
+    const pythonDir = app.isPackaged
+      ? join(process.resourcesPath, 'python')
+      : join(process.cwd(), 'python', 'venv')
 
-    if (isPythonScript) {
-      // Development mode: run with Python from venv
-      const venvPython = join(process.cwd(), 'python', 'venv', 'bin', 'python3')
-      const systemPython = process.platform === 'win32' ? 'python' : 'python3'
-      const pythonCmd = existsSync(venvPython) ? venvPython : systemPython
-
-      console.log('[WhisperXTranscriberService] Using Python:', pythonCmd)
-
-      this.process = spawn(pythonCmd, [execPath], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          PYTHONUNBUFFERED: '1'
-        }
-      })
-    } else {
-      // Production mode: run compiled executable
-      this.process = spawn(execPath, [], {
-        stdio: ['pipe', 'pipe', 'pipe']
-      })
+    const env = {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+      PATH: process.platform === 'win32'
+        ? `${pythonDir};${pythonDir}\\Scripts;${process.env.PATH}`
+        : `${join(pythonDir, 'bin')}:${process.env.PATH}`
     }
+
+    this.process = spawn(pythonPath, [scriptPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env
+    })
 
     // Handle stdout (JSON messages)
     let buffer = ''

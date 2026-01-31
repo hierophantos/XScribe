@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: read  # Required to download artifacts from other workflows
 
 jobs:
   build:
@@ -16,16 +17,55 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          # macOS builds - need separate jobs for x64 and arm64
+          - os: macos-13        # Intel runner
             platform: mac
+            arch: x64
+            venv: darwin-x64
+          - os: macos-14        # M1 runner
+            platform: mac
+            arch: arm64
+            venv: darwin-arm64
+          # Windows build
           - os: windows-latest
             platform: win
+            arch: x64
+            venv: win-x64
+          # Linux build
           - os: ubuntu-latest
             platform: linux
+            arch: x64
+            venv: linux-x64
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Download pre-built Python venv for this platform
+      - name: Download Python venv
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: build-python-venv.yml
+          name: python-venv-${{ matrix.venv }}
+          path: ./venv-archive
+
+      # Extract venv to python-bundled/ directory
+      - name: Extract Python venv (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          tar -xzf ./venv-archive/python-venv-${{ matrix.venv }}.tar.gz
+          mv python python-bundled
+          ls -la python-bundled/
+          echo "=== Bundled Python size ==="
+          du -sh python-bundled/
+
+      - name: Extract Python venv (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          tar -xzf ./venv-archive/python-venv-${{ matrix.venv }}.tar.gz
+          Rename-Item python python-bundled
+          Get-ChildItem python-bundled
+        shell: pwsh
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -40,20 +80,20 @@ jobs:
         run: npm run build
 
       - name: Package for macOS
-        if: matrix.os == 'macos-latest'
-        run: npx electron-builder --mac --publish never
+        if: matrix.platform == 'mac'
+        run: npx electron-builder --mac --${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Package for Windows
-        if: matrix.os == 'windows-latest'
-        run: npx electron-builder --win --publish never
+        if: matrix.platform == 'win'
+        run: npx electron-builder --win --${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Package for Linux
-        if: matrix.os == 'ubuntu-latest'
-        run: npx electron-builder --linux --publish never
+        if: matrix.platform == 'linux'
+        run: npx electron-builder --linux --${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -67,7 +107,7 @@ jobs:
         shell: cmd
 
       - name: Upload macOS Release Assets
-        if: matrix.os == 'macos-latest'
+        if: matrix.platform == 'mac'
         uses: softprops/action-gh-release@v1
         with:
           files: |
@@ -77,7 +117,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Windows Release Assets
-        if: matrix.os == 'windows-latest'
+        if: matrix.platform == 'win'
         uses: softprops/action-gh-release@v1
         with:
           files: |
@@ -86,7 +126,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Linux Release Assets
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.platform == 'linux'
         uses: softprops/action-gh-release@v1
         with:
           files: |

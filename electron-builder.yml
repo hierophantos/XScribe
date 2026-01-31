@@ -22,9 +22,9 @@ asarUnpack:
   - node_modules/ffmpeg-static/ffmpeg.exe
 
 extraResources:
-  # Python WhisperX transcriber (slimmed venv, no models bundled)
-  # Models are downloaded on-demand by the user
-  - from: python/
+  # Bundled Python venv (pre-built in CI with all dependencies)
+  # This is extracted from python-venv-{platform}.tar.gz during release build
+  - from: python-bundled/
     to: python/
     filter:
       - "**/*"
