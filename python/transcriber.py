@@ -105,8 +105,11 @@ def log(message):
 
 
 def send(msg):
-    """Send JSON message to stdout"""
-    print(json.dumps(msg), flush=True)
+    """Send JSON message to stdout (bypasses any redirect_stdout context managers)"""
+    # Use sys.__stdout__ to ensure we write to the original stdout,
+    # even when inside a contextlib.redirect_stdout() context
+    sys.__stdout__.write(json.dumps(msg) + '\n')
+    sys.__stdout__.flush()
 
 
 def send_progress(msg_id, percent, stage, message=None):
