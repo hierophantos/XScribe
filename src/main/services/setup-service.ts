@@ -395,6 +395,20 @@ export class SetupService {
       }
     }, 'Install PyTorch')
 
+    // Install av (PyAV) using pre-built binary wheels only
+    // This avoids the need for pkg-config and ffmpeg dev headers
+    onProgress({
+      stage: 'installing-deps',
+      percent: 70,
+      message: 'Installing audio/video libraries...'
+    })
+
+    await this.runPipCommand([
+      'install',
+      '--only-binary', ':all:',
+      'av>=11'
+    ], () => {}, 'Install PyAV')
+
     // Install WhisperX from GitHub
     onProgress({
       stage: 'installing-deps',
