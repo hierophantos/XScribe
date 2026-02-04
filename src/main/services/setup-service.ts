@@ -25,6 +25,7 @@ import { createWriteStream, existsSync, mkdirSync, chmodSync, readFileSync } fro
 import { writeFile, rm } from 'fs/promises'
 import { join } from 'path'
 import https from 'https'
+import { logger } from './logger'
 
 export type BuildType = 'bundled' | 'lite' | 'development'
 
@@ -82,7 +83,7 @@ export class SetupService {
     // Development mode
     if (!app.isPackaged) {
       this.buildType = 'development'
-      console.log('[SetupService] Build type: development')
+      logger.log('Setup', 'Build type detected: development')
       return this.buildType
     }
 
@@ -93,17 +94,17 @@ export class SetupService {
         const content = readFileSync(markerPath, 'utf-8').trim()
         if (content === 'lite') {
           this.buildType = 'lite'
-          console.log('[SetupService] Build type: lite (marker found)')
+          logger.log('Setup', 'Build type detected: lite (marker found)', { markerPath })
           return this.buildType
         }
       } catch (err) {
-        console.warn('[SetupService] Failed to read build type marker:', err)
+        logger.error('Setup', 'Failed to read build type marker', err)
       }
     }
 
     // Default: bundled (production without lite marker)
     this.buildType = 'bundled'
-    console.log('[SetupService] Build type: bundled')
+    logger.log('Setup', 'Build type detected: bundled')
     return this.buildType
   }
 
@@ -116,28 +117,29 @@ export class SetupService {
 
     // Check if Python exists at the expected location
     if (!existsSync(pythonPath)) {
-      console.log('[SetupService] Python not found at:', pythonPath)
+      logger.log('Setup', 'Python not found', { pythonPath })
       return false
     }
 
     // Bundled builds: Python presence is sufficient
     if (buildType === 'bundled') {
-      console.log('[SetupService] Bundled build - Python found, ready')
+      logger.log('Setup', 'Bundled build - Python found, ready')
       return true
     }
 
     // Lite and development builds: check for setup complete marker
     if (!existsSync(this.setupCompleteFile)) {
-      console.log(`[SetupService] ${buildType} build - setup not complete (no marker)`)
+      logger.log('Setup', `${buildType} build - setup not complete (no marker)`, { markerFile: this.setupCompleteFile })
       return false
     }
 
     // Verify Python actually works
     try {
-      await this.runPythonCommand(['-c', 'import whisperx; print("ok")'], () => {})
+      await this.runPythonCommand(['-c', 'import whisperx; print("ok")'], () => {}, 'Verify WhisperX import')
+      logger.log('Setup', 'Python verification successful')
       return true
-    } catch {
-      console.log('[SetupService] Python verification failed')
+    } catch (err) {
+      logger.error('Setup', 'Python verification failed', err)
       return false
     }
   }
@@ -218,9 +220,16 @@ export class SetupService {
   async runSetup(onProgress: ProgressCallback): Promise<void> {
     const buildType = this.getBuildType()
 
+    logger.log('Setup', 'Starting setup', {
+      buildType,
+      platform: process.platform,
+      arch: process.arch,
+      runtimeDir: this.runtimeDir
+    })
+
     // Bundled builds: Python is pre-packaged, no setup needed
     if (buildType === 'bundled') {
-      console.log('[SetupService] Bundled build - skipping setup (Python is bundled)')
+      logger.log('Setup', 'Bundled build - skipping setup (Python is bundled)')
       onProgress({
         stage: 'complete',
         percent: 100,
@@ -230,16 +239,19 @@ export class SetupService {
     }
 
     // Lite and development builds: run full setup
-    console.log(`[SetupService] ${buildType} build - running setup`)
+    logger.log('Setup', `${buildType} build - running full setup`)
 
     try {
       // Create setup directory
       if (!existsSync(this.runtimeDir)) {
+        logger.log('Setup', 'Creating runtime directory', { runtimeDir: this.runtimeDir })
         mkdirSync(this.runtimeDir, { recursive: true })
       }
 
       // Step 1: Download Python if needed
-      if (!existsSync(this.getPythonPath())) {
+      const pythonPath = this.getPythonPath()
+      if (!existsSync(pythonPath)) {
+        logger.log('Setup', 'Python not found, starting download', { pythonPath })
         onProgress({
           stage: 'downloading-python',
           percent: 0,
@@ -247,9 +259,13 @@ export class SetupService {
         })
 
         await this.downloadAndExtractPython(onProgress)
+        logger.log('Setup', 'Python download and extraction complete')
+      } else {
+        logger.log('Setup', 'Python already exists, skipping download', { pythonPath })
       }
 
       // Step 2: Install Python dependencies
+      logger.log('Setup', 'Starting dependency installation')
       onProgress({
         stage: 'installing-deps',
         percent: 50,
@@ -257,17 +273,22 @@ export class SetupService {
       })
 
       await this.installDependencies(onProgress)
+      logger.log('Setup', 'Dependency installation complete')
 
       // Step 3: Mark setup as complete
       await writeFile(this.setupCompleteFile, new Date().toISOString())
+      logger.log('Setup', 'Setup complete marker written', { markerFile: this.setupCompleteFile })
 
       onProgress({
         stage: 'complete',
         percent: 100,
         message: 'Setup complete!'
       })
+
+      logger.log('Setup', 'Setup completed successfully')
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      logger.error('Setup', 'Setup failed', error)
       onProgress({
         stage: 'error',
         percent: 0,
@@ -290,8 +311,16 @@ export class SetupService {
 
     const downloadInfo = PYTHON_DOWNLOADS[platformKey]
     if (!downloadInfo) {
-      throw new Error(`Unsupported platform: ${process.platform} ${process.arch}`)
+      const errorMsg = `Unsupported platform: ${process.platform} ${process.arch}`
+      logger.error('Setup', errorMsg)
+      throw new Error(errorMsg)
     }
+
+    logger.log('Setup', 'Starting Python download', {
+      platformKey,
+      url: downloadInfo.url,
+      extractedDir: downloadInfo.extractedDir
+    })
 
     const tarPath = join(this.runtimeDir, 'python.tar.gz')
 
@@ -304,6 +333,8 @@ export class SetupService {
       })
     })
 
+    logger.log('Setup', 'Python download complete', { tarPath })
+
     // Extract
     onProgress({
       stage: 'extracting',
@@ -311,16 +342,20 @@ export class SetupService {
       message: 'Extracting Python runtime...'
     })
 
+    logger.log('Setup', 'Extracting Python archive', { tarPath, destDir: this.runtimeDir })
     await this.extractTarGz(tarPath, this.runtimeDir)
+    logger.log('Setup', 'Python extraction complete')
 
     // Clean up tar file
     await rm(tarPath, { force: true })
+    logger.log('Setup', 'Cleaned up tar file')
 
     // Make Python executable on Unix
     if (process.platform !== 'win32') {
       const pythonPath = join(this.runtimePythonDir, 'bin', 'python3')
       if (existsSync(pythonPath)) {
         chmodSync(pythonPath, 0o755)
+        logger.log('Setup', 'Made Python executable', { pythonPath })
       }
     }
   }
@@ -336,7 +371,7 @@ export class SetupService {
       message: 'Upgrading pip...'
     })
 
-    await this.runPythonCommand(['-m', 'pip', 'install', '--upgrade', 'pip'], () => {})
+    await this.runPythonCommand(['-m', 'pip', 'install', '--upgrade', 'pip'], () => {}, 'Upgrade pip')
 
     // Install PyTorch (CPU only for smaller size)
     onProgress({
@@ -358,7 +393,7 @@ export class SetupService {
           message: line.slice(0, 60) + '...'
         })
       }
-    })
+    }, 'Install PyTorch')
 
     // Install WhisperX from GitHub
     onProgress({
@@ -379,7 +414,7 @@ export class SetupService {
           message: line.slice(0, 60) + '...'
         })
       }
-    })
+    }, 'Install WhisperX')
 
     // Install sherpa-onnx for diarization
     onProgress({
@@ -393,7 +428,7 @@ export class SetupService {
       'sherpa-onnx>=1.10.0',
       'soundfile',
       'av'
-    ], () => {})
+    ], () => {}, 'Install sherpa-onnx')
 
     onProgress({
       stage: 'installing-deps',
@@ -405,49 +440,79 @@ export class SetupService {
   /**
    * Run a Python command
    */
-  private runPythonCommand(args: string[], onOutput: (line: string) => void): Promise<void> {
+  private runPythonCommand(args: string[], onOutput: (line: string) => void, stepName: string = 'Python command'): Promise<void> {
     return new Promise((resolve, reject) => {
       const pythonPath = this.getPythonPath()
       const pythonDir = this.getPythonDir()
 
+      logger.log('Setup', `[${stepName}] Starting`, { pythonPath, args })
+
+      const env = {
+        ...process.env,
+        PYTHONPATH: pythonDir,
+        PATH: process.platform === 'win32'
+          ? `${pythonDir};${pythonDir}\\Scripts;${process.env.PATH}`
+          : `${join(pythonDir, 'bin')}:${process.env.PATH}`
+      }
+
       const proc = spawn(pythonPath, args, {
         cwd: this.getBuildType() === 'bundled' ? process.resourcesPath : this.runtimeDir,
-        env: {
-          ...process.env,
-          PYTHONPATH: pythonDir,
-          PATH: process.platform === 'win32'
-            ? `${pythonDir};${pythonDir}\\Scripts;${process.env.PATH}`
-            : `${join(pythonDir, 'bin')}:${process.env.PATH}`
-        }
+        env
       })
 
+      let stdout = ''
+      let stderr = ''
+
       proc.stdout?.on('data', (data) => {
-        const lines = data.toString().split('\n').filter((l: string) => l.trim())
-        lines.forEach((line: string) => onOutput(line))
+        const text = data.toString()
+        stdout += text
+        const lines = text.split('\n').filter((l: string) => l.trim())
+        lines.forEach((line: string) => {
+          logger.log('Setup', `[${stepName}] stdout: ${line.slice(0, 200)}`)
+          onOutput(line)
+        })
       })
 
       proc.stderr?.on('data', (data) => {
-        const lines = data.toString().split('\n').filter((l: string) => l.trim())
-        lines.forEach((line: string) => onOutput(line))
+        const text = data.toString()
+        stderr += text
+        const lines = text.split('\n').filter((l: string) => l.trim())
+        lines.forEach((line: string) => {
+          logger.log('Setup', `[${stepName}] stderr: ${line.slice(0, 200)}`)
+          onOutput(line)
+        })
       })
 
       proc.on('close', (code) => {
         if (code === 0) {
+          logger.log('Setup', `[${stepName}] Completed successfully`)
           resolve()
         } else {
-          reject(new Error(`Python command failed with code ${code}`))
+          const errorMsg = `${stepName} failed with exit code ${code}`
+          // Log the last portion of output for debugging
+          logger.error('Setup', errorMsg, {
+            exitCode: code,
+            lastStdout: stdout.slice(-2000),
+            lastStderr: stderr.slice(-2000)
+          })
+          // Include helpful error context in the rejection
+          const lastOutput = stderr.slice(-500) || stdout.slice(-500)
+          reject(new Error(`${errorMsg}\n\nLast output:\n${lastOutput}`))
         }
       })
 
-      proc.on('error', reject)
+      proc.on('error', (err) => {
+        logger.error('Setup', `[${stepName}] Process error`, err)
+        reject(err)
+      })
     })
   }
 
   /**
    * Run a pip command
    */
-  private runPipCommand(args: string[], onOutput: (line: string) => void): Promise<void> {
-    return this.runPythonCommand(['-m', 'pip', ...args], onOutput)
+  private runPipCommand(args: string[], onOutput: (line: string) => void, stepName: string = 'pip command'): Promise<void> {
+    return this.runPythonCommand(['-m', 'pip', ...args], onOutput, stepName)
   }
 
   /**
@@ -459,6 +524,7 @@ export class SetupService {
     onProgress: (percent: number) => void
   ): Promise<void> {
     return new Promise((resolve, reject) => {
+      logger.log('Setup', 'Starting download', { url, destPath })
       const file = createWriteStream(destPath)
 
       const request = (currentUrl: string) => {
@@ -467,18 +533,22 @@ export class SetupService {
           if (response.statusCode === 302 || response.statusCode === 301) {
             const redirectUrl = response.headers.location
             if (redirectUrl) {
+              logger.log('Setup', 'Following redirect', { from: currentUrl, to: redirectUrl })
               request(redirectUrl)
               return
             }
           }
 
           if (response.statusCode !== 200) {
-            reject(new Error(`Download failed: ${response.statusCode}`))
+            const errorMsg = `Download failed with HTTP ${response.statusCode}`
+            logger.error('Setup', errorMsg, { url: currentUrl, statusCode: response.statusCode })
+            reject(new Error(errorMsg))
             return
           }
 
           const totalSize = parseInt(response.headers['content-length'] || '0', 10)
           let downloadedSize = 0
+          logger.log('Setup', 'Download started', { totalSize, url: currentUrl })
 
           response.on('data', (chunk) => {
             downloadedSize += chunk.length
@@ -491,9 +561,11 @@ export class SetupService {
 
           file.on('finish', () => {
             file.close()
+            logger.log('Setup', 'Download complete', { destPath, totalSize: downloadedSize })
             resolve()
           })
         }).on('error', (err) => {
+          logger.error('Setup', 'Download error', err)
           file.close()
           reject(err)
         })
@@ -508,17 +580,32 @@ export class SetupService {
    */
   private extractTarGz(tarPath: string, destDir: string): Promise<void> {
     return new Promise((resolve, reject) => {
+      logger.log('Setup', 'Starting tar extraction', { tarPath, destDir })
+
       const proc = spawn('tar', ['-xzf', tarPath, '-C', destDir])
+
+      let stderr = ''
+
+      proc.stderr?.on('data', (data) => {
+        stderr += data.toString()
+      })
 
       proc.on('close', (code) => {
         if (code === 0) {
+          logger.log('Setup', 'Tar extraction completed successfully')
           resolve()
         } else {
-          reject(new Error(`Extraction failed with code ${code}`))
+          const errorMsg = `Tar extraction failed with exit code ${code}`
+          logger.error('Setup', errorMsg, { stderr, tarPath, destDir })
+          reject(new Error(`${errorMsg}\n${stderr}`))
         }
       })
 
-      proc.on('error', reject)
+      proc.on('error', (err) => {
+        // This can happen if tar command is not found
+        logger.error('Setup', 'Tar command error (is tar installed?)', err)
+        reject(new Error(`Failed to run tar command: ${err.message}. Is tar installed on your system?`))
+      })
     })
   }
 
@@ -529,13 +616,14 @@ export class SetupService {
     const buildType = this.getBuildType()
 
     if (buildType === 'bundled') {
-      console.log('[SetupService] Cannot reset bundled Python in production')
+      logger.log('Setup', 'Cannot reset bundled Python in production')
       return
     }
 
-    console.log(`[SetupService] Resetting ${buildType} build setup`)
+    logger.log('Setup', `Resetting ${buildType} build setup`, { runtimeDir: this.runtimeDir })
     if (existsSync(this.runtimeDir)) {
       await rm(this.runtimeDir, { recursive: true, force: true })
+      logger.log('Setup', 'Runtime directory removed')
     }
 
     // Clear cached build type to allow re-detection
